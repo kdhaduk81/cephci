@@ -245,21 +245,19 @@ def snap_sched_test(snap_req_params):
         mnt_pt = sv_snap[sv]["mnt_pt"]
         mnt_client_name = sv_snap[sv]["mnt_client"]
         mnt_client = [i for i in clients if i.node.hostname == mnt_client_name][0]
+        retry_exec = retry(CommandFailed, tries=5, delay=20)(
+            mnt_client.exec_command
+        )
         try:
             cmd = f"ls {mnt_pt}/.snap/_{sv_snap[sv]['snap_list'][0]}*/*"
             out, _ = mnt_client.exec_command(sudo=True, cmd=cmd)
         except CommandFailed as ex:
             log.info(ex)
-            retry_exec = retry(CommandFailed, tries=3, delay=20)(
-                mnt_client.exec_command
+            snap_name = sv_snap[sv]["snap_list"][0]
+            cmd = (
+                f"ls {mnt_pt}/.snap/ > /dev/null && "
+                f"ls {mnt_pt}/.snap/_{snap_name}*/dd_test_file"
             )
-            cmd = f"cd {mnt_pt}/.snap/;ls -l ./*"
-            out1, _ = retry_exec(
-                sudo=True,
-                cmd=cmd,
-            )
-            log.info(out1)
-            cmd = f"ls {mnt_pt}/.snap/_{sv_snap[sv]['snap_list'][0]}*/dd_test_file"
             out, _ = retry_exec(
                 sudo=True,
                 cmd=cmd,
@@ -319,21 +317,19 @@ def snap_sched_test(snap_req_params):
     for sv in sv_snap:
         snap_client = sv_snap[sv]["mnt_client_new"]
         for mnt_pt in [sv_snap[sv]["mnt_kernel"], sv_snap[sv]["mnt_fuse"]]:
+            retry_exec = retry(CommandFailed, tries=5, delay=20)(
+                snap_client.exec_command
+            )
             try:
                 cmd = f"ls {mnt_pt}/.snap/*{sv_snap[sv]['snap_list'][0]}*/*"
                 out, rc = snap_client.exec_command(sudo=True, cmd=cmd)
             except CommandFailed as ex:
                 log.info(ex)
-                retry_exec = retry(CommandFailed, tries=3, delay=20)(
-                    snap_client.exec_command
+                snap_name = sv_snap[sv]["snap_list"][0]
+                cmd = (
+                    f"ls {mnt_pt}/.snap/ > /dev/null && "
+                    f"ls {mnt_pt}/.snap/_{snap_name}*/dd_test_file"
                 )
-                cmd = f"cd {mnt_pt}/.snap/;ls -l ./*"
-                out1, _ = retry_exec(
-                    sudo=True,
-                    cmd=cmd,
-                )
-                log.info(out1)
-                cmd = f"ls {mnt_pt}/.snap/_{sv_snap[sv]['snap_list'][0]}*/dd_test_file"
                 out, _ = retry_exec(
                     sudo=True,
                     cmd=cmd,
