@@ -809,7 +809,7 @@ class CephfsMirroringUtils(object):
         log.error("last synced Snapshot not found or not synced")
         raise CommandFailed("last synced Snapshot not found or not synced")
 
-    @retry(CommandFailed, tries=10, delay=60)
+    @retry(CommandFailed, tries=20, delay=30, backoff=1)
     def validate_snapshot_sync_status(
         self,
         cephfs_mirror_node,
@@ -819,12 +819,10 @@ class CephfsMirroringUtils(object):
         asok_file,
         filesystem_id,
         peer_uuid,
-        retry_count=10,
-        retry_delay=30,
     ):
         """
         Validate the synchronization status of a specific snapshot in the target cluster.
-        Retries up to retry_count times with retry_delay seconds between attempts.
+        Retries up to 10 times with a constant 30s delay between attempts via the @retry decorator.
         Args:
             cephfs_mirror_node (CephNode): The CephNode representing the CephFS mirror node.
             fs_name (str): The name of the Ceph filesystem being synchronized.
@@ -833,8 +831,6 @@ class CephfsMirroringUtils(object):
             asok_file (str): The admin socket file for the CephFS mirror.
             filesystem_id (str): The ID of the filesystem being synchronized.
             peer_uuid (str): The UUID of the peer cluster.
-            retry_count (int): Number of retry attempts (default 10).
-            retry_delay (int): Seconds to wait between retries (default 30).
 
         Returns:
             dict: A dictionary with details of the synchronized snapshot, including snapshot name, sync duration,
@@ -852,45 +848,35 @@ class CephfsMirroringUtils(object):
         log.info(f"filesystem id of {fs_name} is : {filesystem_id}")
         peer_uuid = self.get_peer_uuid_by_name(self.source_clients[0], fs_name)
         log.info(f"peer uuid of {fs_name} is : {peer_uuid}")
-        for attempt in range(1, retry_count + 1):
-            still_syncing = False
-            for node, asok in asok_file.items():
+        for node, asok in asok_file.items():
+            try:
                 asok[0].exec_command(
                     sudo=True, cmd="dnf install -y ceph-common --nogpgcheck"
                 )
-                cmd = (
-                    f"cd /var/run/ceph/{fsid}/ ; ceph --admin-daemon {asok[1]} fs mirror peer status "
-                    f"{fs_name}@{filesystem_id} {peer_uuid} -f json"
-                )
-                out, _ = asok[0].exec_command(sudo=True, cmd=cmd)
-                data = json.loads(out)
-                for path, status in data.items():
-                    last_synced_snap = status.get("last_synced_snap")
-                    if last_synced_snap:
-                        if last_synced_snap.get("name") == snapshot_name:
-                            sync_duration = last_synced_snap.get("sync_duration")
-                            sync_time_stamp = last_synced_snap.get("sync_time_stamp")
-                            snaps_synced = status.get("snaps_synced")
-                            log.info("All snapshots are synced")
-                            return {
-                                "snapshot_name": snapshot_name,
-                                "sync_duration": sync_duration,
-                                "sync_time_stamp": sync_time_stamp,
-                                "snaps_synced": snaps_synced,
-                            }
-                    if status.get("state") == "syncing":
-                        still_syncing = True
-
-            if still_syncing and attempt < retry_count:
-                log.warning(
-                    f"{snapshot_name} not synced yet, sync in progress "
-                    f"(attempt {attempt}/{retry_count}). Retrying in {retry_delay}s..."
-                )
-                time.sleep(retry_delay)
-            else:
-                break
-
-        log.error(f"{snapshot_name} not synced, last synced data is {data}")
+            except CommandFailed as e:
+                log.warning(f"dnf install ceph-common failed (non-fatal): {e}")
+            cmd = (
+                f"cd /var/run/ceph/{fsid}/ ; ceph --admin-daemon {asok[1]} fs mirror peer status "
+                f"{fs_name}@{filesystem_id} {peer_uuid} -f json"
+            )
+            out, _ = asok[0].exec_command(sudo=True, cmd=cmd)
+            data = json.loads(out)
+            for path, status in data.items():
+                last_synced_snap = status.get("last_synced_snap")
+                if last_synced_snap:
+                    if last_synced_snap.get("name") == snapshot_name:
+                        sync_duration = last_synced_snap.get("sync_duration")
+                        sync_time_stamp = last_synced_snap.get("sync_time_stamp")
+                        snaps_synced = status.get("snaps_synced")
+                        log.info("All snapshots are synced")
+                        return {
+                            "snapshot_name": snapshot_name,
+                            "sync_duration": sync_duration,
+                            "sync_time_stamp": sync_time_stamp,
+                            "snaps_synced": snaps_synced,
+                        }
+        log.info("snapshot status: %s", status.get("state"))
+        log.error("%s not synced, last synced data is %s", snapshot_name, data)
         raise CommandFailed("One or more snapshots are not synced")
 
     def remove_snapshot_mirror_peer(self, source_clients, fs_name, peer_uuid):
