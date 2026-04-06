@@ -1324,7 +1324,7 @@ class CephfsMirroringUtils(object):
         except Exception as e:
             log.error(f"Error destroying CephFS mirroring setup: {e}")
 
-    @retry(Exception, tries=10, delay=15)
+    @retry(Exception, tries=10, delay=15, backoff=1)
     def _ensure_volumes_module(self, client):
         """
         Ensure the 'volumes' mgr module is loaded after a mgr restart.
