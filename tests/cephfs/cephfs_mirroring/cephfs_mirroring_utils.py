@@ -2237,3 +2237,47 @@ class CephfsMirroringUtils(object):
         else:
             log.error(f"Path '{absolute_path}' not found in the mirror status.")
             return None
+
+
+@retry(CommandFailed, tries=10, delay=30, backoff=1)
+def wait_for_sync_idle(fs_name, fsid, asok_file, filesystem_id, peer_uuid, paths):
+    """
+    Waits until all given paths reach 'idle' state in the mirror peer status.
+    Retries every 30s for up to ~5 minutes.
+
+    Args:
+        fs_name (str): The CephFS volume name (e.g., cephfs).
+        fsid (str): The unique CephFS cluster FSID.
+        asok_file (dict): Dictionary mapping node name to [client_object, asok_path].
+        filesystem_id (int): The ID for the CephFS filesystem.
+        peer_uuid (str): The UUID of the mirroring peer.
+        paths (list): List of absolute paths to check for idle state.
+
+    Raises:
+        CommandFailed: If any path is not in 'idle' state (triggers retry).
+    """
+    for node, asok in asok_file.items():
+        try:
+            asok[0].exec_command(sudo=True, cmd="dnf install -y ceph-common --nogpgcheck")
+        except Exception as e:
+            log.warning("dnf install ceph-common failed (non-fatal): %s", e)
+    cmd = (
+        f"cd /var/run/ceph/{fsid}/ ; ceph --admin-daemon {asok[1]} fs mirror peer status "
+        f"{fs_name}@{filesystem_id} {peer_uuid} -f json"
+    )
+    out, _ = asok[0].exec_command(sudo=True, cmd=cmd)
+    data = json.loads(out)
+
+    for path in paths:
+        absolute_path = path.rstrip("/")
+        if absolute_path not in data:
+            raise CommandFailed(f"Path '{absolute_path}' not found in mirror status")
+        state = data[absolute_path].get("state", "unknown")
+        synced = data[absolute_path].get("snaps_synced", 0)
+        log.info("%s state=%s snaps_synced=%s", absolute_path, state, synced)
+        if state != "idle":
+            raise CommandFailed(
+                f"Path '{absolute_path}' still in state '{state}', waiting for idle"
+            )
+
+    log.info("All paths are in idle state")

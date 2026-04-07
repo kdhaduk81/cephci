@@ -4,7 +4,10 @@ import string
 import time
 import traceback
 
-from tests.cephfs.cephfs_mirroring.cephfs_mirroring_utils import CephfsMirroringUtils
+from tests.cephfs.cephfs_mirroring.cephfs_mirroring_utils import (
+    CephfsMirroringUtils,
+    wait_for_sync_idle,
+)
 from tests.cephfs.cephfs_utilsV1 import FsUtils
 from tests.cephfs.snapshot_clone.cephfs_snap_utils import SnapUtils
 from utility.log import Log
@@ -317,35 +320,37 @@ def run(ceph_cluster, **kw):
         )
         log.info(f"peer uuid of {source_fs} is : {peer_uuid}")
 
+        wait_for_sync_idle(
+            source_fs, fsid, asok_file, filesystem_id, peer_uuid,
+            [subvol1_path, subvol2_path],
+        )
+
         snaps_synced1 = get_snaps_synced(
             source_fs, fsid, asok_file, filesystem_id, peer_uuid, subvol1_path
         )
         snaps_synced2 = get_snaps_synced(
-            source_fs, fsid, asok_file, filesystem_id, peer_uuid, subvol1_path
+            source_fs, fsid, asok_file, filesystem_id, peer_uuid, subvol2_path
         )
-        if snaps_synced1 is not None and snaps_synced2 is not None:
-            log.info(
-                f"Snaps synced for path '{subvol1_path}' is {snaps_synced1} & '{subvol2_path}' is {snaps_synced2}"
+        log.info(
+            "Snaps synced for '%s' is %s & '%s' is %s",
+            subvol1_path, snaps_synced1, subvol2_path, snaps_synced2,
+        )
+
+        if snap_count1 != snaps_synced1:
+            log.error(
+                "Mismatch for %s: snap_count (%s) != snaps_synced (%s)",
+                subvol1_path, snap_count1, snaps_synced1,
             )
-
-            if snap_count1 != snaps_synced1:
-                log.error(
-                    f"Mismatch for {subvol1_path}: snap_count1 ({snap_count1}) != snaps_synced1 ({snaps_synced1})"
-                )
-                return 1
-
-            if snap_count2 != snaps_synced2:
-                log.error(
-                    f"Mismatch for {subvol2_path}: snap_count2 ({snap_count2}) != snaps_synced2 ({snaps_synced2})"
-                )
-                return 1
-
-            log.info("Snap counts and snaps synced match for both subvolumes.")
-            return 0
-        else:
-            log.error("Failed to capture snaps_synced for one or both subvolumes.")
             return 1
 
+        if snap_count2 != snaps_synced2:
+            log.error(
+                "Mismatch for %s: snap_count (%s) != snaps_synced (%s)",
+                subvol2_path, snap_count2, snaps_synced2,
+            )
+            return 1
+
+        log.info("Snap counts and snaps synced match for both subvolumes.")
         return 0
     except Exception as e:
         log.error(e)
