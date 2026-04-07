@@ -286,7 +286,15 @@ def run(ceph_cluster, **kw):
             f"list of scheduled snapshots from client mount path : {snap_schedule_list2}"
         )
 
-        log.info("Capture the snapshot created count")
+        log.info("Remove snap schedules so no new snapshots are created")
+        snap_util.remove_snap_schedule(
+            source_clients[0], subvol1_path, fs_name=source_fs
+        )
+        snap_util.remove_snap_schedule(
+            source_clients[0], subvol2_path, fs_name=source_fs
+        )
+
+        log.info("Capture the final snapshot count after schedule removal")
         snap_count1, rc = source_clients[0].exec_command(
             sudo=True, cmd=f'ls -lrt {snap_path1}/.snap/| grep "scheduled" | wc -l'
         )
