@@ -2258,7 +2258,9 @@ def wait_for_sync_idle(fs_name, fsid, asok_file, filesystem_id, peer_uuid, paths
     """
     for node, asok in asok_file.items():
         try:
-            asok[0].exec_command(sudo=True, cmd="dnf install -y ceph-common --nogpgcheck")
+            asok[0].exec_command(
+                sudo=True, cmd="dnf install -y ceph-common --nogpgcheck"
+            )
         except Exception as e:
             log.warning("dnf install ceph-common failed (non-fatal): %s", e)
     cmd = (

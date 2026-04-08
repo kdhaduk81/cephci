@@ -319,14 +319,14 @@ def snap_sched_test(snap_req_params):
     for sv in sv_snap:
         snap_client = sv_snap[sv]["mnt_client_new"]
         for mnt_pt in [sv_snap[sv]["mnt_kernel"], sv_snap[sv]["mnt_fuse"]]:
-            retry_exec = retry(CommandFailed, tries=3, delay=20)(
-                snap_client.exec_command
-            )
             try:
                 cmd = f"ls {mnt_pt}/.snap/*{sv_snap[sv]['snap_list'][0]}*/*"
                 out, rc = snap_client.exec_command(sudo=True, cmd=cmd)
             except CommandFailed as ex:
                 log.info(ex)
+                retry_exec = retry(CommandFailed, tries=3, delay=20)(
+                    snap_client.exec_command
+                )
                 cmd = f"cd {mnt_pt}/.snap/;ls -l ./*"
                 out1, _ = retry_exec(
                     sudo=True,

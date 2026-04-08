@@ -329,7 +329,11 @@ def run(ceph_cluster, **kw):
         log.info(f"peer uuid of {source_fs} is : {peer_uuid}")
 
         wait_for_sync_idle(
-            source_fs, fsid, asok_file, filesystem_id, peer_uuid,
+            source_fs,
+            fsid,
+            asok_file,
+            filesystem_id,
+            peer_uuid,
             [subvol1_path, subvol2_path],
         )
 
@@ -341,20 +345,27 @@ def run(ceph_cluster, **kw):
         )
         log.info(
             "Snaps synced for '%s' is %s & '%s' is %s",
-            subvol1_path, snaps_synced1, subvol2_path, snaps_synced2,
+            subvol1_path,
+            snaps_synced1,
+            subvol2_path,
+            snaps_synced2,
         )
 
         if snap_count1 != snaps_synced1:
             log.error(
                 "Mismatch for %s: snap_count (%s) != snaps_synced (%s)",
-                subvol1_path, snap_count1, snaps_synced1,
+                subvol1_path,
+                snap_count1,
+                snaps_synced1,
             )
             return 1
 
         if snap_count2 != snaps_synced2:
             log.error(
                 "Mismatch for %s: snap_count (%s) != snaps_synced (%s)",
-                subvol2_path, snap_count2, snaps_synced2,
+                subvol2_path,
+                snap_count2,
+                snaps_synced2,
             )
             return 1
 
