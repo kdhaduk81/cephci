@@ -47,7 +47,8 @@ def run(ceph_cluster, **kw):
             - 1 on failure if there is any mismatch in snapshot counts or any part of the process fails.
 
     Cleanup:
-        - Removes all created snapshot schedules.
+        - Snapshot schedules are removed in the main flow before sync checks; finally repeats
+          removal with check_ec disabled for early-failure cleanup without aborting teardown.
         - Unmounts and removes the mounted directories and paths.
         - Deletes CephFS mirroring configuration and removes the associated subvolumes and subvolume groups.
         - Removes the CephFS filesystem from both the source and target clusters.
@@ -387,12 +388,11 @@ def run(ceph_cluster, **kw):
                 sudo=True, cmd=f"rmdir {snapshot_path}", check_ec=False
             )
 
-        snap_util.remove_snap_schedule(
-            source_clients[0], subvol1_path, fs_name=source_fs
-        ),
-        snap_util.remove_snap_schedule(
-            source_clients[0], subvol2_path, fs_name=source_fs
-        ),
+        # Best-effort remove (check_ec=False) if the main path did not run; harmless if already removed.
+        for _path in (subvol1_path, subvol2_path):
+            snap_util.remove_snap_schedule(
+                source_clients[0], _path, fs_name=source_fs, check_ec=False
+            )
 
         log.info("Unmount the paths")
         paths_to_unmount = [kernel_mounting_dir_1, fuse_mounting_dir_1]
