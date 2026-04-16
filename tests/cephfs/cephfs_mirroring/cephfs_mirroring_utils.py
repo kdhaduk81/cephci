@@ -551,6 +551,99 @@ class CephfsMirroringUtils(object):
             raise CommandFailed("Peer uuid not created yet")
         return peer_uuid
 
+    @staticmethod
+    def verify_mirror_daemon_running(fs_util, source_client, cephfs_mirror_nodes):
+        """
+        Verify the cephfs-mirror daemon is running via the existing
+        FsUtilsV1.get_daemon_status and a podman ps cross-check.
+
+        Args:
+            fs_util: FsUtilsV1 instance (provides get_daemon_status).
+            source_client: A client node that can run ceph commands.
+            cephfs_mirror_nodes: List of CephFS mirror node objects.
+
+        Returns:
+            dict: Info about the running daemon with keys:
+                - daemon_name (str): e.g. "cephfs-mirror.mero006.pfumvd"
+                - hostname (str): e.g. "mero006"
+                - status (str): daemon status from orch ps
+              Returns None if no running daemon is found.
+        """
+        log.info("Verifying cephfs-mirror daemon is running via ceph orch ps")
+        daemon_ls = fs_util.get_daemon_status(source_client, "cephfs-mirror")
+        if not daemon_ls:
+            log.error("No cephfs-mirror daemons found in ceph orch ps output")
+            return None
+
+        running_daemon = None
+        for d in daemon_ls:
+            d_name = d.get("daemon_name", "")
+            d_host = d.get("hostname", "")
+            d_status_desc = d.get("status_desc", "")
+            log.info(
+                "ceph orch ps: daemon=%s host=%s status=%s",
+                d_name, d_host, d_status_desc,
+            )
+            if d_status_desc == "running":
+                running_daemon = {
+                    "daemon_name": d_name,
+                    "hostname": d_host,
+                    "status": d_status_desc,
+                }
+
+        if not running_daemon:
+            log.error(
+                "No cephfs-mirror daemon has status 'running'. "
+                "Daemons: %s", daemon_ls,
+            )
+            return None
+
+        log.info(
+            "cephfs-mirror daemon %s is running on %s per ceph orch ps",
+            running_daemon["daemon_name"],
+            running_daemon["hostname"],
+        )
+
+        # Cross-check via podman ps on the actual host
+        target_host = running_daemon["hostname"]
+        daemon_name = running_daemon["daemon_name"]
+        for node in cephfs_mirror_nodes:
+            if node.node.hostname != target_host:
+                continue
+            podman_out, _ = node.exec_command(
+                sudo=True,
+                cmd="podman ps --format '{{.Names}}' --filter status=running",
+                check_ec=False,
+            )
+            if not podman_out:
+                log.error(
+                    "podman ps returned no output on %s", target_host,
+                )
+                return None
+
+            container_found = any(
+                "cephfs-mirror" in line for line in podman_out.splitlines()
+            )
+            if container_found:
+                log.info(
+                    "Confirmed cephfs-mirror container for %s is running "
+                    "on %s via podman ps",
+                    daemon_name, target_host,
+                )
+                return running_daemon
+            else:
+                log.error(
+                    "cephfs-mirror container for %s NOT found in podman ps "
+                    "on %s. Running containers: %s",
+                    daemon_name, target_host, podman_out.strip(),
+                )
+                return None
+
+        log.error(
+            "Host %s not found among cephfs_mirror_nodes", target_host,
+        )
+        return None
+
     def get_asok_file(self, cephfs_mirror_node, fsid, daemon_names):
         """
         Fetches the asok file of the cephfs-mirror daemon.
@@ -585,17 +678,23 @@ class CephfsMirroringUtils(object):
         return asok_files
 
     def get_asok_file_with_connectivity_check(
-        self, cephfs_mirror_node, fsid, daemon_names
+        self, cephfs_mirror_node, fsid, daemon_names, running_daemon_info=None
     ):
         """
         Fetches the asok file of the cephfs-mirror daemon with connectivity testing.
         Tests connectivity to each asok file and retries with remaining files if connection refused.
         This function is useful when connection refused errors occur with the first asok file.
 
+        When running_daemon_info is provided (from verify_mirror_daemon_running), only
+        the host and daemon name confirmed as running are searched, avoiding stale asok
+        files left behind by previous daemon incarnations.
+
         Args:
             cephfs_mirror_node (CephNode or list): The CephFS mirror node(s) used to execute the command.
             fsid (str): The FSID (File System ID) of the Ceph cluster.
-            daemon_name (str or list): The name(s) of the cephfs-mirror daemon.
+            daemon_names (str or list): The name(s) of the cephfs-mirror daemon.
+            running_daemon_info (dict, optional): Output of verify_mirror_daemon_running.
+                If provided, restricts the search to the running daemon's host and name.
         Returns:
             dict: Dictionary mapping hostname to [node, asok_file_path] for accessible asok files.
         """
@@ -604,12 +703,27 @@ class CephfsMirroringUtils(object):
         )
         accessible_asok_files = {}
 
+        if running_daemon_info:
+            active_daemon = running_daemon_info["daemon_name"]
+            active_host = running_daemon_info["hostname"]
+            daemon_names = [active_daemon]
+            log.info(
+                "Restricting asok search to running daemon %s on host %s",
+                active_daemon, active_host,
+            )
+        else:
+            active_host = None
+
         for daemon_name in daemon_names:
-            # Get all asok files, not just the first one
             cmd = f"cd /var/run/ceph/{fsid}/ ; ls -1tr ceph-client.{daemon_name}* 2>/dev/null"
-            # cephfs_mirror_node is always a list from get_ceph_objects("cephfs-mirror")
             for node in cephfs_mirror_node:
-                # Get all asok files for this node
+                if active_host and node.node.hostname != active_host:
+                    log.info(
+                        "Skipping node %s (daemon is running on %s)",
+                        node.node.hostname, active_host,
+                    )
+                    continue
+
                 file_output, _ = node.exec_command(sudo=True, cmd=cmd, check_ec=False)
                 asok_file_list = [
                     f.strip() for f in file_output.split("\n") if f.strip()
@@ -618,17 +732,15 @@ class CephfsMirroringUtils(object):
                     f"Found {len(asok_file_list)} asok file(s) for {node.node.hostname}: {asok_file_list}"
                 )
 
-                # Test each asok file until we find an accessible one for this hostname
                 for asok_file_path in asok_file_list:
                     if not asok_file_path:
                         continue
                     if node.node.hostname in accessible_asok_files:
-                        break  # Already found accessible file for this hostname
+                        break
 
                     log.info(
                         f"Testing connectivity to asok file on {node.node.hostname}: {asok_file_path}"
                     )
-                    # test_cmd = f"cd /var/run/ceph ; ceph --admin-daemon {asok_file_path} help"
                     test_cmd = (
                         f"cephadm shell -- bash -c "
                         f'"cd /var/run/ceph && ceph --admin-daemon {asok_file_path} help"'
@@ -638,7 +750,6 @@ class CephfsMirroringUtils(object):
                         sudo=True, cmd=test_cmd, check_ec=False
                     )
 
-                    # Check if "fs mirror peer status" is in the output
                     if out and "fs mirror peer status" in out:
                         accessible_asok_files[node.node.hostname] = [
                             node,
@@ -647,7 +758,7 @@ class CephfsMirroringUtils(object):
                         log.info(
                             f"Successfully connected to asok file on {node.node.hostname}: {asok_file_path}"
                         )
-                        break  # Found accessible file, move to next hostname
+                        break
                     else:
                         log.warning(
                             f"Connection refused or error accessing asok file on {node.node.hostname}: "

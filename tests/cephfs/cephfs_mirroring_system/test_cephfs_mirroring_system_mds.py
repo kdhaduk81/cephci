@@ -5,6 +5,7 @@ import traceback
 from tests.cephfs.cephfs_mirroring.cephfs_mirroring_utils import CephfsMirroringUtils
 from tests.cephfs.cephfs_mirroring_system.cephfs_mirroring_system_utils import (
     cleanup_mirroring_test_environment,
+    collect_background_io_logs,
     run_container_restart,
     run_daemon_redeploy,
     run_node_reboot,
@@ -110,14 +111,17 @@ def run(ceph_cluster, **kw):
         target_fs = env["target_fs"]
         subvolume_paths = env["subvolume_paths"]
         mounting_dirs = env["mounting_dirs"]
+        full_subvolume_path = env["full_subvolume_path"]
+        cephfs_mirror_nodes = env["cephfs_mirror_nodes"]
         fsid = env["fsid"]
+        daemon_name = env["daemon_name"]
         asok_file = env["asok_file"]
         filesystem_id = env["filesystem_id"]
         peer_uuid = env["peer_uuid"]
 
         log.info(f"Starting background IOs for {io_runtime} minutes")
         io_threads = start_background_ios(
-            fs_util_v1_ceph1, source_clients[0], mounting_dirs, io_runtime
+            fs_util_v1_ceph1, source_clients[0], full_subvolume_path, io_runtime
         )
 
         # Give IO a moment to actually start
@@ -141,6 +145,26 @@ def run(ceph_cluster, **kw):
             test_name = test_case["name"]
 
             log.info("=== Starting %s test ===", test_name)
+
+            # Verify cephfs-mirror daemon is running and refetch asok file
+            running_daemon_info = CephfsMirroringUtils.verify_mirror_daemon_running(
+                fs_util_v1_ceph1, source_clients[0], cephfs_mirror_nodes
+            )
+            if not running_daemon_info:
+                log.error(
+                    "cephfs-mirror daemon is not running before %s", test_name
+                )
+                return 1
+            asok_file = fs_mirroring_utils.get_asok_file_with_connectivity_check(
+                cephfs_mirror_nodes, fsid, daemon_name,
+                running_daemon_info=running_daemon_info,
+            )
+            if not asok_file:
+                log.error(
+                    "Failed to get asok file before %s", test_name
+                )
+                return 1
+            log.info("Using asok_file for %s: %s", test_name, asok_file)
 
             # Get baseline snapshot sync counts before test
             snap_sync_counts_before = []
@@ -340,7 +364,6 @@ def run(ceph_cluster, **kw):
                     )
                 except Exception as e:
                     log.error(str(e))
-                    return 1
 
             log.info("=== %s test completed successfully ===", test_name)
 
@@ -351,6 +374,18 @@ def run(ceph_cluster, **kw):
                 log.info("IO thread %s still running (as expected)", idx)
             else:
                 log.info("IO thread %s completed", idx)
+
+        # Verify cephfs-mirror daemon and refetch asok file for final check
+        running_daemon_info = CephfsMirroringUtils.verify_mirror_daemon_running(
+            fs_util_v1_ceph1, source_clients[0], cephfs_mirror_nodes
+        )
+        if running_daemon_info:
+            refreshed = fs_mirroring_utils.get_asok_file_with_connectivity_check(
+                cephfs_mirror_nodes, fsid, daemon_name,
+                running_daemon_info=running_daemon_info,
+            )
+            if refreshed:
+                asok_file = refreshed
 
         # Final snapshot sync verification
         log.info("Final snapshot sync verification")
@@ -391,6 +426,8 @@ def run(ceph_cluster, **kw):
         for t in io_threads:
             t.join()
         log.info("All IO threads have completed")
+
+        collect_background_io_logs(source_clients[0], full_subvolume_path)
 
         log.info(
             "Test Completed Successfully. All signal tests passed. "
