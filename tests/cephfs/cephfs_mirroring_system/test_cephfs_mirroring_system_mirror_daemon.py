@@ -152,25 +152,19 @@ def run(ceph_cluster, **kw):
 
             log.info("=== Starting %s test ===", test_name)
 
-            # Verify daemon is running before fetching asok file
-            running_daemon_info = CephfsMirroringUtils.verify_mirror_daemon_running(
+            if not CephfsMirroringUtils.verify_mirror_daemon_running(
                 fs_util_v1_ceph1, source_clients[0], cephfs_mirror_nodes
-            )
-            if not running_daemon_info:
-                log.error(
-                    "cephfs-mirror daemon is not running before %s", test_name
-                )
+            ):
+                log.error("cephfs-mirror daemon not running before %s", test_name)
                 return 1
 
             # Fetch asok_file at the start of each test
             # It will be refetched after operations that restart the daemon
             asok_file = fs_mirroring_utils.get_asok_file_with_connectivity_check(
-                cephfs_mirror_nodes, fsid, daemon_name,
-                running_daemon_info=running_daemon_info,
+                cephfs_mirror_nodes, fsid, daemon_name
             )
             if not asok_file:
                 return 1
-            log.info("Using asok_file for %s: %s", test_name, asok_file)
 
             # Check cluster health before test
             log.info("Verify cluster is healthy before %s", test_name)
@@ -306,27 +300,18 @@ def run(ceph_cluster, **kw):
                 if mirror_node:
                     cephfs_mirror_nodes = mirror_node.get_ceph_objects()
 
-                # Verify daemon is running before refetching asok file
-                running_daemon_info = (
-                    CephfsMirroringUtils.verify_mirror_daemon_running(
-                        fs_util_v1_ceph1, source_clients[0], cephfs_mirror_nodes
-                    )
-                )
-                if not running_daemon_info:
-                    log.error(
-                        "cephfs-mirror daemon is not running after %s", test_name
-                    )
+                if not CephfsMirroringUtils.verify_mirror_daemon_running(
+                    fs_util_v1_ceph1, source_clients[0], cephfs_mirror_nodes
+                ):
+                    log.error("cephfs-mirror daemon not running after %s", test_name)
                     return 1
 
-                # Refetch asok_file
                 asok_file = fs_mirroring_utils.get_asok_file_with_connectivity_check(
-                    cephfs_mirror_nodes, fsid, daemon_name,
-                    running_daemon_info=running_daemon_info,
+                    cephfs_mirror_nodes, fsid, daemon_name
                 )
                 if not asok_file:
                     log.error("Failed to refetch asok_file after %s", test_name)
                     return 1
-                log.info("Refetched asok_file after %s: %s", test_name, asok_file)
 
             # Check cluster health after test
             health_timeout = (

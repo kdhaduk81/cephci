@@ -146,23 +146,16 @@ def run(ceph_cluster, **kw):
 
             log.info("=== Starting %s test ===", test_name)
 
-            # Verify cephfs-mirror daemon is running and refetch asok file
-            running_daemon_info = CephfsMirroringUtils.verify_mirror_daemon_running(
+            if not CephfsMirroringUtils.verify_mirror_daemon_running(
                 fs_util_v1_ceph1, source_clients[0], cephfs_mirror_nodes
-            )
-            if not running_daemon_info:
-                log.error(
-                    "cephfs-mirror daemon is not running before %s", test_name
-                )
+            ):
+                log.error("cephfs-mirror daemon not running before %s", test_name)
                 return 1
             asok_file = fs_mirroring_utils.get_asok_file_with_connectivity_check(
-                cephfs_mirror_nodes, fsid, daemon_name,
-                running_daemon_info=running_daemon_info,
+                cephfs_mirror_nodes, fsid, daemon_name
             )
             if not asok_file:
-                log.error(
-                    "Failed to get asok file before %s", test_name
-                )
+                log.error("Failed to get asok file before %s", test_name)
                 return 1
             log.info("Using asok_file for %s: %s", test_name, asok_file)
 
@@ -376,13 +369,11 @@ def run(ceph_cluster, **kw):
                 log.info("IO thread %s completed", idx)
 
         # Verify cephfs-mirror daemon and refetch asok file for final check
-        running_daemon_info = CephfsMirroringUtils.verify_mirror_daemon_running(
+        if CephfsMirroringUtils.verify_mirror_daemon_running(
             fs_util_v1_ceph1, source_clients[0], cephfs_mirror_nodes
-        )
-        if running_daemon_info:
+        ):
             refreshed = fs_mirroring_utils.get_asok_file_with_connectivity_check(
-                cephfs_mirror_nodes, fsid, daemon_name,
-                running_daemon_info=running_daemon_info,
+                cephfs_mirror_nodes, fsid, daemon_name
             )
             if refreshed:
                 asok_file = refreshed

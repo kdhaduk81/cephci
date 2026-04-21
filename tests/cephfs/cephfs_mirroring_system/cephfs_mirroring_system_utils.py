@@ -28,115 +28,74 @@ from utility.retry import retry
 
 log = Log(__name__)
 
-
 REMOTE_IO_LOG_DIR = "/var/log/mirror_io_logs"
+_SMALLFILE_OPS = [
+    "create", "read", "append", "read", "delete",
+    "create", "overwrite", "rename", "delete-renamed",
+    "mkdir", "rmdir", "create", "symlink", "stat",
+    "chmod", "ls-l", "delete", "cleanup",
+]
 
 
 def _run_background_io(client, mounting_dir, runtime, io_log_file):
-    """
-    Run smallfile IO on a single mount point with output redirected to a
-    remote log file so that IO noise stays out of the main test log.
-
-    Args:
-        client: Client node to run IOs on
-        mounting_dir: Mount directory path
-        runtime: Runtime for IOs in minutes
-        io_log_file: Path on the remote node where IO output is logged
-    """
-    ops = [
-        "create", "read", "append", "read", "delete",
-        "create", "overwrite", "rename", "delete-renamed",
-        "mkdir", "rmdir", "create", "symlink", "stat",
-        "chmod", "ls-l", "delete", "cleanup",
-    ]
-    dir_suffix = "".join(
-        random.choice(string.ascii_lowercase + string.digits) for _ in range(4)
-    )
-    io_path = f"{mounting_dir}/smallfile_io_dir_{dir_suffix}"
-
+    """Run smallfile IO with output redirected to *io_log_file* on the remote node."""
+    suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    io_path = f"{mounting_dir}/smallfile_io_dir_{suffix}"
     try:
         client.exec_command(sudo=True, cmd=f"mkdir -p {io_path}")
-        end_time = time.time() + (runtime * 60)
-        iteration = 0
+        end_time = time.time() + runtime * 60
         while time.time() < end_time:
-            for op in ops:
+            for op in _SMALLFILE_OPS:
                 if time.time() >= end_time:
                     break
-                cmd = (
-                    f"python3 /home/cephuser/smallfile/smallfile_cli.py "
-                    f"--operation {op} --threads 8 "
-                    f"--file-size 10240 --files 10 "
-                    f"--top {io_path} >> {io_log_file} 2>&1"
-                )
                 try:
-                    client.exec_command(sudo=True, cmd=cmd, timeout=600)
+                    client.exec_command(
+                        sudo=True, timeout=600,
+                        cmd=f"python3 /home/cephuser/smallfile/smallfile_cli.py "
+                            f"--operation {op} --threads 8 --file-size 10240 "
+                            f"--files 10 --top {io_path} >> {io_log_file} 2>&1",
+                    )
                 except Exception:
                     pass
                 time.sleep(3)
-            iteration += 1
             time.sleep(30)
     except Exception as e:
         log.error("Background IO failed on %s: %s", mounting_dir, e)
 
 
 def start_background_ios(fs_util, client, mounting_dirs, runtime):
-    """
-    Start background IO threads on all mount points.
-
-    IO output is redirected to separate log files on the remote node
-    to keep the main test log readable.
-
-    Args:
-        fs_util: Filesystem utility object
-        client: Client node to run IOs on
-        mounting_dirs: List of mount directories
-        runtime: Runtime for IOs in minutes
-
-    Returns:
-        List of Thread objects
-    """
+    """Start background IO threads; output goes to remote log files."""
     client.exec_command(sudo=True, cmd=f"mkdir -p {REMOTE_IO_LOG_DIR}")
     threads = []
     for idx, mounting_dir in enumerate(mounting_dirs):
-        io_log_file = f"{REMOTE_IO_LOG_DIR}/io_thread_{idx}.log"
+        io_log = f"{REMOTE_IO_LOG_DIR}/io_thread_{idx}.log"
         t = Thread(
             target=_run_background_io,
-            args=(client, mounting_dir, runtime, io_log_file),
+            args=(client, mounting_dir, runtime, io_log),
             daemon=True,
         )
         t.start()
         threads.append(t)
-        log.info("Started IO thread for %s (logs at %s)", mounting_dir, io_log_file)
+        log.info("Started IO thread for %s (logs: %s)", mounting_dir, io_log)
     return threads
 
 
-def _get_local_log_dir():
-    """Derive the local test log directory from the logger's file handler."""
-    for handler in logging.getLogger("cephci").handlers:
-        if isinstance(handler, logging.FileHandler):
-            return os.path.dirname(handler.baseFilename)
-    return "/tmp"
-
-
 def collect_background_io_logs(client, mounting_dirs):
-    """
-    Download IO log files from the remote client node to the local test
-    log directory so they are available alongside the main test log.
-
-    Args:
-        client: Client node where IO was running
-        mounting_dirs: List of mount directories (same list passed to start_background_ios)
-    """
-    local_dir = os.path.join(_get_local_log_dir(), "mirror_io_logs")
+    """Download IO logs from the remote node to the local test log directory."""
+    for h in logging.getLogger("cephci").handlers:
+        if isinstance(h, logging.FileHandler):
+            local_dir = os.path.join(os.path.dirname(h.baseFilename), "mirror_io_logs")
+            break
+    else:
+        local_dir = "/tmp/mirror_io_logs"
     os.makedirs(local_dir, exist_ok=True)
     for idx in range(len(mounting_dirs)):
-        remote_path = f"{REMOTE_IO_LOG_DIR}/io_thread_{idx}.log"
-        local_path = os.path.join(local_dir, f"io_thread_{idx}.log")
+        remote = f"{REMOTE_IO_LOG_DIR}/io_thread_{idx}.log"
+        local = os.path.join(local_dir, f"io_thread_{idx}.log")
         try:
-            client.download_file(src=remote_path, dst=local_path, sudo=True)
-            log.info("Collected IO log: %s -> %s", remote_path, local_path)
+            client.download_file(src=remote, dst=local, sudo=True)
         except Exception as e:
-            log.warning("Could not collect IO log %s: %s", remote_path, e)
+            log.warning("Could not collect IO log %s: %s", remote, e)
     log.info("IO logs saved to: %s", local_dir)
 
 
@@ -824,14 +783,12 @@ def setup_mirroring_test_environment(
     log.info("fsid on ceph cluster : %s", fsid)
     daemon_name = fs_mirroring_utils.get_daemon_name(source_client)
     log.info("Name of the cephfs-mirror daemon : %s", daemon_name)
-    running_daemon_info = CephfsMirroringUtils.verify_mirror_daemon_running(
+    if not CephfsMirroringUtils.verify_mirror_daemon_running(
         fs_util_v1_ceph1, source_client, cephfs_mirror_nodes
-    )
-    if not running_daemon_info:
+    ):
         raise Exception("cephfs-mirror daemon is not running")
     asok_file = fs_mirroring_utils.get_asok_file_with_connectivity_check(
-        cephfs_mirror_nodes, fsid, daemon_name,
-        running_daemon_info=running_daemon_info,
+        cephfs_mirror_nodes, fsid, daemon_name
     )
     if not asok_file:
         raise Exception("Failed to get admin socket file for cephfs-mirror daemon")
