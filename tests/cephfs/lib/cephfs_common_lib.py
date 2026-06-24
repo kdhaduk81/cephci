@@ -53,6 +53,7 @@ class CephFSCommonUtils(FsUtils):
             "stray daemon(s) not managed by cephadm",
             "CALL_HOME_ENABLED_AUTOMATICALLY",
             "MGR_MODULE_ERROR",
+            "Module 'dashboard' has failed: No module named 'dashboard.model.certificate'",
         ]
         non_accepted_list = ["OSD_DOWN", "OSD_HOST_DOWN"]
         while ceph_healthy == 0 and (datetime.datetime.now() < end_time):
