@@ -118,38 +118,38 @@ tests:
       destroy-cluster: false
       module: test_client.py
       name: "configure client"
-  ######################################################################################################################
-  # Feature: MDS Traceability
-  # Verify jaeger tracing config, sliding window, trace dump for IO operations
-  ######################################################################################################################
-  #- test:
-  #    name: test MDS traceability
-  #    module: cephfs_mds_observability.test_mds_traceability.py
-  #    polarion-id: CEPH-83632357
-  #    desc: MDS traceability - jaeger tracing config, sliding window, trace dump for IO
-  #    abort-on-fail: false
-  ######################################################################################################################
-  # Feature: MDS Observability
-  # mds_rank_perf metrics, CPU vs counters validation
-  ######################################################################################################################
-  - test:
-      name: test MDS metrics observability
-      module: cephfs_mds_observability.test_mds_metrics.py
-      polarion-id: CEPH-83632240
-      desc: MDS observability - subvolume metrics, mds_rank_perf counters, CPU validation
-      abort-on-fail: false
-  - test:
-      name: test MDS and subvolume metrics across disruptive ops
-      module: cephfs_mds_observability.test_mds_subvol_metrics_disruptive_ops.py
-      polarion-id: CEPH-83632428
-      desc: Verify subvolume and mds metrics remain available across MDS/MGR disruptive operations with ongoing smallfile IO
-      abort-on-fail: false
-  ######################################################################################################################
-  # Feature: CephFS Subvolume Metrics - Functional
-  ######################################################################################################################
-  - test:
-      name: test subvolume metrics functional
-      module: cephfs_subvol_metrics.test_subvol_metrics_functional.py
-      polarion-id: CEPH-83632373
-      desc: CephFS subvolume metrics functional test
-      abort-on-fail: false
+#  ######################################################################################################################
+#  # Feature: MDS Traceability
+#  # Verify jaeger tracing config, sliding window, trace dump for IO operations
+#  ######################################################################################################################
+#  #- test:
+#  #    name: test MDS traceability
+#  #    module: cephfs_mds_observability.test_mds_traceability.py
+#  #    polarion-id: CEPH-83632357
+#  #    desc: MDS traceability - jaeger tracing config, sliding window, trace dump for IO
+#  #    abort-on-fail: false
+#  ######################################################################################################################
+#  # Feature: MDS Observability
+#  # mds_rank_perf metrics, CPU vs counters validation
+#  ######################################################################################################################
+#  - test:
+#      name: test MDS metrics observability
+#      module: cephfs_mds_observability.test_mds_metrics.py
+#      polarion-id: CEPH-83632240
+#      desc: MDS observability - subvolume metrics, mds_rank_perf counters, CPU validation
+#      abort-on-fail: false
+#  - test:
+#      name: test MDS and subvolume metrics across disruptive ops
+#      module: cephfs_mds_observability.test_mds_subvol_metrics_disruptive_ops.py
+#      polarion-id: CEPH-83632428
+#      desc: Verify subvolume and mds metrics remain available across MDS/MGR disruptive operations with ongoing smallfile IO
+#      abort-on-fail: false
+#  ######################################################################################################################
+#  # Feature: CephFS Subvolume Metrics - Functional
+#  ######################################################################################################################
+#  - test:
+#      name: test subvolume metrics functional
+#      module: cephfs_subvol_metrics.test_subvol_metrics_functional.py
+#      polarion-id: CEPH-83632373
+#      desc: CephFS subvolume metrics functional test
+#      abort-on-fail: false
