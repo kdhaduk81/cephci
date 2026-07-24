@@ -130,15 +130,11 @@ def run(ceph_cluster, **kw):
             )
 
         log.info("Write data and create snapshots for initial sync")
-        source_clients[0].exec_command(
-            sudo=True, cmd=f"touch {mount_path1}file_mgr1"
-        )
+        source_clients[0].exec_command(sudo=True, cmd=f"touch {mount_path1}file_mgr1")
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_mgr1"
         )
-        source_clients[0].exec_command(
-            sudo=True, cmd=f"touch {mount_path2}file_mgr2"
-        )
+        source_clients[0].exec_command(sudo=True, cmd=f"touch {mount_path2}file_mgr2")
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path2}.snap/snap_mgr2"
         )
@@ -178,9 +174,7 @@ def run(ceph_cluster, **kw):
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir -p {kernel_mounting_dir}{new_dir}"
         )
-        fs_mirroring_utils.add_path_for_mirroring(
-            source_clients[0], source_fs, new_dir
-        )
+        fs_mirroring_utils.add_path_for_mirroring(source_clients[0], source_fs, new_dir)
 
         log.info("Immediately query MGR status after adding path")
         mgr_status = fs_mirroring_utils.get_mgr_mirror_status(
@@ -218,9 +212,7 @@ def run(ceph_cluster, **kw):
 
         mgr_peer_entries = list(new_dir_data.get("peer", {}).values())
         if not mgr_peer_entries:
-            raise CommandFailed(
-                f"No peer entry found for {new_dir_key} in MGR status"
-            )
+            raise CommandFailed(f"No peer entry found for {new_dir_key} in MGR status")
 
         peer_stats = mgr_peer_entries[0]
         default_fields = {
@@ -234,18 +226,14 @@ def run(ceph_cluster, **kw):
 
         state = default_fields["state"]
         if state != "idle":
-            log.warning(
-                f"Expected state='idle' for freshly added dir, got '{state}'"
-            )
+            log.warning(f"Expected state='idle' for freshly added dir, got '{state}'")
         else:
             log.info("state is 'idle' as expected")
 
         for counter in ("snaps_synced", "snaps_deleted", "snaps_renamed"):
             val = default_fields[counter]
             if val != 0:
-                log.warning(
-                    f"Expected {counter}=0 for freshly added dir, got {val}"
-                )
+                log.warning(f"Expected {counter}=0 for freshly added dir, got {val}")
             else:
                 log.info(f"{counter} is 0 as expected")
 
@@ -284,7 +272,8 @@ def run(ceph_cluster, **kw):
             f"of={mount_path1}omap_file_$i bs=1M count=1 2>/dev/null; done",
         )
         source_clients[0].exec_command(
-            sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_omap",
+            sudo=True,
+            cmd=f"mkdir {mount_path1}.snap/snap_omap",
         )
 
         log.info("Inspect OMAP keys during active sync (listing 1)")
@@ -330,7 +319,8 @@ def run(ceph_cluster, **kw):
         time.sleep(60)
 
         source_clients[0].exec_command(
-            sudo=True, cmd=f"rmdir {mount_path1}.snap/snap_omap",
+            sudo=True,
+            cmd=f"rmdir {mount_path1}.snap/snap_omap",
             check_ec=False,
         )
 
@@ -358,9 +348,7 @@ def run(ceph_cluster, **kw):
             cmd=f"ceph config set client.cephfs-mirror {tick_key} 30",
         )
         log.info("Restart cephfs-mirror daemon for tick_interval to take effect")
-        source_clients[0].exec_command(
-            sudo=True, cmd="ceph orch restart cephfs-mirror"
-        )
+        source_clients[0].exec_command(sudo=True, cmd="ceph orch restart cephfs-mirror")
         time.sleep(30)
         out_set, _ = source_clients[0].exec_command(
             sudo=True,
@@ -379,7 +367,8 @@ def run(ceph_cluster, **kw):
             f"of={mount_path1}tick_file_$i bs=1M count=1 2>/dev/null; done",
         )
         source_clients[0].exec_command(
-            sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_tick",
+            sudo=True,
+            cmd=f"mkdir {mount_path1}.snap/snap_tick",
         )
 
         log.info("Wait for snap_tick to sync via asok (live, not affected by tick)")
@@ -394,17 +383,17 @@ def run(ceph_cluster, **kw):
                 f"[Asok tick wait {poll_i}] state={ps.get('state')}, "
                 f"last_synced={ps.get('last_synced_snap', {}).get('name')}"
             )
-            if ps.get("state") == "idle" and ps.get(
-                "last_synced_snap", {}
-            ).get("name") == "snap_tick":
+            if (
+                ps.get("state") == "idle"
+                and ps.get("last_synced_snap", {}).get("name") == "snap_tick"
+            ):
                 break
 
         log.info("snap_tick synced. Now create snap_tick2 and measure MGR lag")
+        source_clients[0].exec_command(sudo=True, cmd=f"touch {mount_path1}tick2_file")
         source_clients[0].exec_command(
-            sudo=True, cmd=f"touch {mount_path1}tick2_file"
-        )
-        source_clients[0].exec_command(
-            sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_tick2",
+            sudo=True,
+            cmd=f"mkdir {mount_path1}.snap/snap_tick2",
         )
 
         log.info(
@@ -426,22 +415,24 @@ def run(ceph_cluster, **kw):
                 if peer_entries:
                     state = peer_entries[0].get("state", "unknown")
                     snaps_synced = peer_entries[0].get("snaps_synced", 0)
-                    last_snap = peer_entries[0].get(
-                        "last_synced_snap", {}
-                    ).get("name", "")
+                    last_snap = (
+                        peer_entries[0].get("last_synced_snap", {}).get("name", "")
+                    )
                     log.info(
                         f"[Tick poll {elapsed}s] state={state}, "
                         f"snaps_synced={snaps_synced}, last_snap={last_snap}"
                     )
                     mgr_snapshots.append(
-                        {"poll_s": elapsed, "state": state,
-                         "snaps_synced": snaps_synced, "last_snap": last_snap}
+                        {
+                            "poll_s": elapsed,
+                            "state": state,
+                            "snaps_synced": snaps_synced,
+                            "last_snap": last_snap,
+                        }
                     )
                     if last_snap == "snap_tick2" and first_seen_at is None:
                         first_seen_at = elapsed
-                        log.info(
-                            f"snap_tick2 first appeared in MGR at {elapsed}s"
-                        )
+                        log.info(f"snap_tick2 first appeared in MGR at {elapsed}s")
                 else:
                     log.info(f"[Tick poll {elapsed}s] No peer entry yet")
             except Exception as e:
@@ -462,13 +453,12 @@ def run(ceph_cluster, **kw):
                     f"Scenario 4: MGR updated faster than expected ({first_seen_at}s)"
                 )
         else:
-            log.warning(
-                "Scenario 4: snap_tick2 never appeared in MGR within 90s"
-            )
+            log.warning("Scenario 4: snap_tick2 never appeared in MGR within 90s")
 
         for snap in ["snap_tick", "snap_tick2"]:
             source_clients[0].exec_command(
-                sudo=True, cmd=f"rmdir {mount_path1}.snap/{snap}",
+                sudo=True,
+                cmd=f"rmdir {mount_path1}.snap/{snap}",
                 check_ec=False,
             )
 
@@ -478,9 +468,7 @@ def run(ceph_cluster, **kw):
             cmd=f"ceph config set client.cephfs-mirror {tick_key} 5",
         )
         log.info("Restart cephfs-mirror daemon for tick_interval reset to take effect")
-        source_clients[0].exec_command(
-            sudo=True, cmd="ceph orch restart cephfs-mirror"
-        )
+        source_clients[0].exec_command(sudo=True, cmd="ceph orch restart cephfs-mirror")
         time.sleep(30)
         out_reset, _ = source_clients[0].exec_command(
             sudo=True,
@@ -504,7 +492,18 @@ def run(ceph_cluster, **kw):
         status_before_bounce = fs_mirroring_utils.get_mgr_mirror_status(
             source_clients[0], source_fs
         )
-        log.info(f"Status before module bounce: {status_before_bounce}")
+        log.info(
+            f"Status before module bounce: {json.dumps(status_before_bounce, indent=2)}"
+        )
+
+        metrics_before = status_before_bounce.get("metrics", {})
+        paths_before = set(metrics_before.keys())
+        synced_before = {}
+        for p, pdata in metrics_before.items():
+            peers = list(pdata.get("peer", {}).values())
+            if peers:
+                synced_before[p] = peers[0].get("snaps_synced", 0)
+        log.info(f"Before bounce: paths={paths_before}, snaps_synced={synced_before}")
 
         source_clients[0].exec_command(
             sudo=True, cmd="ceph mgr module disable mirroring"
@@ -518,11 +517,43 @@ def run(ceph_cluster, **kw):
         status_after_bounce = fs_mirroring_utils.get_mgr_mirror_status(
             source_clients[0], source_fs
         )
-        log.info(f"Status after module bounce: {status_after_bounce}")
+        log.info(
+            f"Status after module bounce: {json.dumps(status_after_bounce, indent=2)}"
+        )
 
         if not status_after_bounce:
             raise CommandFailed("MGR status empty after module bounce")
-        log.info("MGR module bounce preserves state - validated")
+
+        metrics_after = status_after_bounce.get("metrics", {})
+        paths_after = set(metrics_after.keys())
+        peers_after = {}
+        for p, pdata in metrics_after.items():
+            peer_uuids = list(pdata.get("peer", {}).keys())
+            peers_after[p] = peer_uuids
+        log.info(f"After bounce: paths={paths_after}, peers={peers_after}")
+
+        if paths_before != paths_after:
+            raise CommandFailed(
+                f"S5 FAILED: Mirrored paths lost after bounce — "
+                f"before={paths_before}, after={paths_after}"
+            )
+
+        for p in paths_before:
+            before_peers = list(metrics_before.get(p, {}).get("peer", {}).keys())
+            after_peers = peers_after.get(p, [])
+            if set(before_peers) != set(after_peers):
+                raise CommandFailed(
+                    f"S5 FAILED: Peer UUIDs changed for {p} — "
+                    f"before={before_peers}, after={after_peers}"
+                )
+
+        log.info(
+            f"S5: snaps_synced before={synced_before} (counters reset after "
+            f"bounce — expected, these are in-memory)"
+        )
+        log.info(
+            "S5 PASSED: MGR module bounce preserves mirrored paths and peer associations"
+        )
 
         # ============================================================
         # Scenario 6: OMAP cleanup on directory removal
@@ -591,7 +622,9 @@ def run(ceph_cluster, **kw):
             cmd=f"rados -p {metadata_pool} listomapkeys cephfs_mirror",
             check_ec=False,
         )
-        omap_before = set(out_before.strip().splitlines()) if out_before.strip() else set()
+        omap_before = (
+            set(out_before.strip().splitlines()) if out_before.strip() else set()
+        )
         log.info(f"OMAP keys before removal: {omap_before}")
 
         log.info("Remove snapshot, then remove path from mirroring")
@@ -652,31 +685,125 @@ def run(ceph_cluster, **kw):
         log.info("Scenario 7: Stale detection - daemon stop and recovery")
         log.info("=" * 60)
 
-        log.info("Stop cephfs-mirror daemon")
-        source_clients[0].exec_command(
-            sudo=True, cmd="ceph orch stop cephfs-mirror"
+        log.info("Capture metrics_updated_at before daemon stop")
+        status_before_stop = fs_mirroring_utils.get_mgr_mirror_status(
+            source_clients[0], source_fs
         )
+        log.info(f"Status before stop: {json.dumps(status_before_stop, indent=2)}")
+
+        ts_before = {}
+        for p, pdata in status_before_stop.get("metrics", {}).items():
+            peers = list(pdata.get("peer", {}).values())
+            if peers:
+                ts_before[p] = peers[0].get("metrics_updated_at", 0)
+        log.info(f"metrics_updated_at before stop: {ts_before}")
+
+        log.info("Stop cephfs-mirror daemon")
+        source_clients[0].exec_command(sudo=True, cmd="ceph orch stop cephfs-mirror")
         time.sleep(20)
 
         status_during_stop = fs_mirroring_utils.get_mgr_mirror_status(
             source_clients[0], source_fs
         )
-        log.info(f"Status during daemon stop: {status_during_stop}")
+        log.info(f"Status during daemon stop: {json.dumps(status_during_stop, indent=2)}")
+
+        ts_during_stop = {}
+        for p, pdata in status_during_stop.get("metrics", {}).items():
+            peers = list(pdata.get("peer", {}).values())
+            if peers:
+                ts_during_stop[p] = peers[0].get("metrics_updated_at", 0)
+        log.info(f"metrics_updated_at during stop: {ts_during_stop}")
+
+        now_during_stop = time.time()
+        stale_threshold = 30
+        stale_detected = False
+        for p in ts_before:
+            ts_stop = ts_during_stop.get(p, 0)
+            age = now_during_stop - ts_stop if ts_stop else float("inf")
+            log.info(
+                f"S7: {p} — metrics_updated_at={ts_stop}, "
+                f"current_time={now_during_stop:.2f}, age={age:.1f}s"
+            )
+            if age > stale_threshold:
+                log.info(
+                    f"S7: {p} metrics are STALE (age {age:.1f}s > {stale_threshold}s) "
+                    f"— daemon stop detected"
+                )
+                stale_detected = True
+            else:
+                log.info(f"S7: {p} metrics still fresh (age {age:.1f}s)")
+
+        if not stale_detected:
+            log.warning(
+                "S7: No stale metrics detected during daemon stop — "
+                "20s wait may be too short"
+            )
+
+        paths_during_stop = set(status_during_stop.get("metrics", {}).keys())
+        if not paths_during_stop:
+            raise CommandFailed("S7 FAILED: MGR metrics empty during daemon stop")
+        log.info(f"S7: Mirrored paths still visible during stop: {paths_during_stop}")
 
         log.info("Restart cephfs-mirror daemon")
-        source_clients[0].exec_command(
-            sudo=True, cmd="ceph orch start cephfs-mirror"
-        )
+        source_clients[0].exec_command(sudo=True, cmd="ceph orch start cephfs-mirror")
         time.sleep(60)
 
         status_after_restart = fs_mirroring_utils.get_mgr_mirror_status(
             source_clients[0], source_fs
         )
-        log.info(f"Status after daemon restart: {status_after_restart}")
+        log.info(f"Status after restart: {json.dumps(status_after_restart, indent=2)}")
 
-        if not status_after_restart:
-            raise CommandFailed("MGR status empty after daemon restart")
-        log.info("Stale detection and recovery validated")
+        if not status_after_restart.get("metrics"):
+            raise CommandFailed("S7 FAILED: MGR metrics empty after daemon restart")
+
+        ts_after = {}
+        for p, pdata in status_after_restart.get("metrics", {}).items():
+            peers = list(pdata.get("peer", {}).values())
+            if peers:
+                ts_after[p] = peers[0].get("metrics_updated_at", 0)
+        log.info(f"metrics_updated_at after restart: {ts_after}")
+
+        now_after_restart = time.time()
+        recovered = True
+        for p in ts_during_stop:
+            ts_new = ts_after.get(p, 0)
+            age_after = now_after_restart - ts_new if ts_new else float("inf")
+            log.info(
+                f"S7: {p} — metrics_updated_at={ts_new}, "
+                f"current_time={now_after_restart:.2f}, age={age_after:.1f}s"
+            )
+            if ts_new > ts_during_stop[p]:
+                log.info(
+                    f"S7: {p} metrics REFRESHED after restart "
+                    f"({ts_during_stop[p]} -> {ts_new})"
+                )
+            else:
+                log.warning(
+                    f"S7: {p} metrics NOT refreshed — "
+                    f"stop={ts_during_stop[p]}, after={ts_new}"
+                )
+                recovered = False
+            if age_after > stale_threshold:
+                log.warning(
+                    f"S7: {p} metrics still stale after restart "
+                    f"(age {age_after:.1f}s > {stale_threshold}s)"
+                )
+                recovered = False
+            else:
+                log.info(
+                    f"S7: {p} metrics fresh after restart (age {age_after:.1f}s)"
+                )
+
+        if not recovered:
+            log.warning("S7: Some paths did not fully recover after daemon restart")
+
+        paths_after = set(status_after_restart.get("metrics", {}).keys())
+        if paths_during_stop != paths_after:
+            raise CommandFailed(
+                f"S7 FAILED: Paths changed after restart — "
+                f"during_stop={paths_during_stop}, after={paths_after}"
+            )
+        log.info("S7 PASSED: Stale detection and recovery validated")
 
         # ============================================================
         # Scenario 8: Metrics cache TTL and staleness
@@ -717,9 +844,7 @@ def run(ceph_cluster, **kw):
             log.warning("Scenario 8: P1 != P2 within TTL (unexpected)")
 
         log.info("Create snap_cache to trigger a state change")
-        source_clients[0].exec_command(
-            sudo=True, cmd=f"touch {mount_path1}cache_file"
-        )
+        source_clients[0].exec_command(sudo=True, cmd=f"touch {mount_path1}cache_file")
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_cache"
         )
@@ -735,8 +860,10 @@ def run(ceph_cluster, **kw):
                 f"[Cache sync wait {attempt}] state={ps.get('state')}, "
                 f"last_synced={ps.get('last_synced_snap', {}).get('name')}"
             )
-            if (ps.get("state") == "idle"
-                    and ps.get("last_synced_snap", {}).get("name") == "snap_cache"):
+            if (
+                ps.get("state") == "idle"
+                and ps.get("last_synced_snap", {}).get("name") == "snap_cache"
+            ):
                 break
 
         log.info("P3: Query MGR immediately after sync (may still be cached)")
@@ -766,9 +893,7 @@ def run(ceph_cluster, **kw):
                 f"(snap_cache visible, snaps_synced={p4_synced})"
             )
         else:
-            log.warning(
-                f"Scenario 8: Expected snap_cache in P4, got {p4_last}"
-            )
+            log.warning(f"Scenario 8: Expected snap_cache in P4, got {p4_last}")
 
         log.info("Reset cache TTL")
         source_clients[0].exec_command(
@@ -777,7 +902,8 @@ def run(ceph_cluster, **kw):
             check_ec=False,
         )
         source_clients[0].exec_command(
-            sudo=True, cmd=f"rmdir {mount_path1}.snap/snap_cache",
+            sudo=True,
+            cmd=f"rmdir {mount_path1}.snap/snap_cache",
             check_ec=False,
         )
 
@@ -793,19 +919,32 @@ def run(ceph_cluster, **kw):
         )
         time.sleep(5)
 
+        disabled_error = False
         try:
-            out, _ = source_clients[0].exec_command(
+            out, err = source_clients[0].exec_command(
                 sudo=True,
                 cmd=f"ceph fs snapshot mirror status {source_fs} -f json",
                 check_ec=False,
             )
-            log.info(f"Status with module disabled: {out.strip()[:200]}")
-            if "error" in out.lower() or "not" in out.lower() or not out.strip():
-                log.info("Scenario 9: Clear error when module disabled")
+            combined = f"{out.strip()} {err.strip() if err else ''}".strip()
+            log.info(f"S9: Output with module disabled: stdout='{out.strip()}', stderr='{err}'")
+            if not out.strip():
+                log.info("S9: Empty response when module disabled")
+                disabled_error = True
+            elif "error" in combined.lower() or "not" in combined.lower():
+                log.info(f"S9: Error message received: {combined}")
+                disabled_error = True
             else:
-                log.info("Scenario 9: Unexpected output when module disabled")
+                log.warning(f"S9: Unexpected non-error output: {combined}")
         except CommandFailed as e:
-            log.info(f"Scenario 9: Command failed as expected: {e}")
+            log.info(f"S9: Command failed as expected: {e}")
+            disabled_error = True
+
+        if not disabled_error:
+            log.warning(
+                "S9: No error/empty response when mirroring module disabled — "
+                "command should fail or return an error"
+            )
 
         source_clients[0].exec_command(
             sudo=True, cmd="ceph mgr module enable mirroring"
@@ -815,9 +954,11 @@ def run(ceph_cluster, **kw):
         status_after_reenable = fs_mirroring_utils.get_mgr_mirror_status(
             source_clients[0], source_fs
         )
-        if status_after_reenable:
-            log.info("Scenario 9: Status recovered after re-enable")
-        log.info("Scenario 9: MGR disabled error validated")
+        log.info(f"S9: Status after re-enable: {json.dumps(status_after_reenable, indent=2)}")
+        if status_after_reenable and status_after_reenable.get("metrics"):
+            log.info("S9 PASSED: Status recovered after re-enable with metrics intact")
+        else:
+            log.warning("S9: Status empty or no metrics after re-enable")
 
         # ============================================================
         # Scenario 10: MGR CLI sanity — invalid inputs
@@ -826,20 +967,32 @@ def run(ceph_cluster, **kw):
         log.info("Scenario 10: MGR CLI sanity — invalid inputs")
         log.info("=" * 60)
 
-        invalid_cmds = [
-            f"ceph fs snapshot mirror status nonexistent_fs -f json",
-            f"ceph fs snapshot mirror status {source_fs} /non_mirrored_dir -f json",
-        ]
-        for cmd in invalid_cmds:
+        invalid_cmds = {
+            f"ceph fs snapshot mirror status nonexistent_fs -f json":
+                "nonexistent filesystem",
+            f"ceph fs snapshot mirror status {source_fs} /non_mirrored_dir -f json":
+                "non-mirrored directory",
+        }
+        for cmd, description in invalid_cmds.items():
             try:
-                out, _ = source_clients[0].exec_command(
+                out, err = source_clients[0].exec_command(
                     sudo=True, cmd=cmd, check_ec=False
                 )
-                log.info(f"Command '{cmd}' output: {out.strip()[:200]}")
-            except CommandFailed:
-                log.info(f"Command '{cmd}' failed as expected")
+                combined = f"{out.strip()} {err.strip() if err else ''}".strip()
+                log.info(
+                    f"S10 ({description}): stdout='{out.strip()}', "
+                    f"stderr='{err.strip() if err else ''}'"
+                )
+                if not combined or "error" in combined.lower() or "no" in combined.lower():
+                    log.info(f"S10 ({description}): Got expected error/empty response")
+                else:
+                    log.warning(
+                        f"S10 ({description}): Unexpected non-error output: {combined}"
+                    )
+            except CommandFailed as e:
+                log.info(f"S10 ({description}): Command failed as expected: {e}")
 
-        log.info("Scenario 10: CLI sanity validated")
+        log.info("S10 PASSED: CLI sanity validated")
 
         log.info("All MGR interface scenarios passed")
         return 0
@@ -872,8 +1025,13 @@ def run(ceph_cluster, **kw):
 
             log.info("Delete the snapshots")
             all_snaps = [
-                "snap_mgr1", "snap_mgr2", "snap_omap",
-                "snap_tick", "snap_tick2", "snap_cache", "snap_cleanup",
+                "snap_mgr1",
+                "snap_mgr2",
+                "snap_omap",
+                "snap_tick",
+                "snap_tick2",
+                "snap_cache",
+                "snap_cleanup",
             ]
             snap_mount_paths = [
                 f"{kernel_mounting_dir}{subvolume_paths[0]}",
@@ -882,7 +1040,8 @@ def run(ceph_cluster, **kw):
             for spath in snap_mount_paths:
                 for snap in all_snaps:
                     source_clients[0].exec_command(
-                        sudo=True, cmd=f"rmdir {spath}.snap/{snap}",
+                        sudo=True,
+                        cmd=f"rmdir {spath}.snap/{snap}",
                         check_ec=False,
                     )
 
@@ -926,14 +1085,18 @@ def run(ceph_cluster, **kw):
             log.info("Remove Subvolumes")
             for i in range(1, 3):
                 fs_util_ceph1.remove_subvolume(
-                    source_clients[0], source_fs,
-                    f"{subvol_name}_{i}", group_name=subvol_group_name,
+                    source_clients[0],
+                    source_fs,
+                    f"{subvol_name}_{i}",
+                    group_name=subvol_group_name,
                     check_ec=False,
                 )
 
             log.info("Remove Subvolume Group")
             fs_util_ceph1.remove_subvolumegroup(
-                source_clients[0], source_fs, subvol_group_name,
+                source_clients[0],
+                source_fs,
+                subvol_group_name,
                 check_ec=False,
             )
         except Exception as cleanup_err:

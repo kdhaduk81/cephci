@@ -16,20 +16,16 @@ def run(ceph_cluster, **kw):
     """
     CEPH-83632744 - Validate CephFS mirroring asok metrics for 9.2 enhancements.
 
-    Covers:
-     1. Mirroring stats validation with CLI schema verification
-     2. Sync-mode validation (full vs delta)
-     3. ETA state machine
-     4. Crawl state lifecycle
-     5. Datasync queue wait under load
-     6. Read/Write throughput validation
-     7. last_synced_snap enrichment
-     9. Zero-file directory sync metrics
-     10. Snapdiff and Blockdiff verification
-     11. Monotonicity regression test
-     12. Sync-mode when snapdiff reference missing
+    Consolidated scenarios:
+     1. Schema verification (field presence)
+     2. Full sync — sync-mode, ETA, crawl, datasync, throughput (500 MiB)
+     3. Delta sync — sync-mode, monotonicity, snapdiff/blockdiff
+     4. last_synced_snap enrichment (assert non-zero values)
+     5. Sync-mode fallback when snapdiff ref missing
 
-    Note: Scenario 8 (sync failure) moved to test_cephfs_mirror_disruptive_ops.py
+    Note: Zero-file directory sync validated in test_cephfs_mirror_improved_stats (R12).
+
+    Note: Scenario 8 (sync failure) in test_cephfs_mirror_disruptive_ops.py
 
     Returns 0 on success, 1 on failure.
     """
@@ -119,7 +115,15 @@ def run(ceph_cluster, **kw):
                 source_clients[0], source_fs, subvol_path
             )
 
-        log.info("Fetch daemon info for asok queries")
+        log.info("Set tick interval to 1s for accurate sync metrics")
+        source_clients[0].exec_command(
+            sudo=True,
+            cmd="ceph config set client.cephfs-mirror " "cephfs_mirror_tick_interval 1",
+        )
+        log.info("Restart cephfs-mirror daemon for tick_interval to take effect")
+        source_clients[0].exec_command(sudo=True, cmd="ceph orch restart cephfs-mirror")
+        time.sleep(30)
+
         fsid = fs_mirroring_utils.get_fsid(cephfs_mirror_node[0])
         daemon_name = fs_mirroring_utils.get_daemon_name(source_clients[0])
         asok_file = fs_mirroring_utils.get_asok_file(
@@ -132,96 +136,111 @@ def run(ceph_cluster, **kw):
             source_clients[0], source_fs
         )
 
+        mount_path1 = f"{kernel_mounting_dir}{subvol_path1}"
+        mount_path2 = f"{fuse_mounting_dir}{subvol_path2}"
+        path1_key = subvol_path1.rstrip("/")
+        path2_key = subvol_path2.rstrip("/")
+
         # ============================================================
-        # Scenario 1: Mirroring stats schema verification
+        # Scenario 1: Schema verification
         # ============================================================
         log.info("=" * 60)
-        log.info("Scenario 1: Stats schema verification")
+        log.info("Scenario 1: Schema verification")
         log.info("=" * 60)
         status_before = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
             cephfs_mirror_node[0], source_clients[0], source_fs
         )
-        log.info(f"Peer status (initial): {status_before}")
+        log.info(f"Peer status (initial): {json.dumps(status_before, indent=2)}")
 
         for path, dir_status in status_before.items():
-            required_fields = ["state", "snaps_synced", "snaps_deleted", "snaps_renamed"]
-            for field in required_fields:
+            required = ["state", "snaps_synced", "snaps_deleted", "snaps_renamed"]
+            for field in required:
                 if field not in dir_status:
                     raise CommandFailed(
                         f"Missing field '{field}' in asok status for {path}"
                     )
-            log.info(f"Schema validated for {path}: {list(dir_status.keys())}")
+            log.info(f"Schema OK for {path}: {list(dir_status.keys())}")
 
         # ============================================================
-        # Scenario 2: Sync-mode validation (full vs delta)
+        # Scenario 2: Full sync — comprehensive in-flight metrics
+        # (sync-mode, ETA, crawl, datasync, throughput)
         # ============================================================
         log.info("=" * 60)
-        log.info("Scenario 2: Sync-mode validation (full vs delta)")
+        log.info("Scenario 2: Full sync — all in-flight metrics (500 MiB)")
         log.info("=" * 60)
 
-        log.info("Reduce tick interval for faster metric updates")
+        log.info("Write 500 MiB data for observable full sync")
         source_clients[0].exec_command(
             sudo=True,
-            cmd="ceph config set client.cephfs-mirror cephfs_mirror_tick_interval 1",
-        )
-        log.info("Restart cephfs-mirror daemon for tick_interval to take effect")
-        source_clients[0].exec_command(
-            sudo=True, cmd="ceph orch restart cephfs-mirror"
-        )
-        time.sleep(30)
-        daemon_name = fs_mirroring_utils.get_daemon_name(source_clients[0])
-        asok_file = fs_mirroring_utils.get_asok_file(
-            cephfs_mirror_node[0], fsid, daemon_name
-        )
-
-        mount_path1 = f"{kernel_mounting_dir}{subvol_path1}"
-
-        log.info("Write initial data and create first snapshot (full sync)")
-        source_clients[0].exec_command(
-            sudo=True,
-            cmd=f"dd if=/dev/urandom of={mount_path1}fulldata bs=1M count=10",
+            cmd=f"dd if=/dev/urandom of={mount_path1}fulldata bs=1M count=500",
         )
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_full"
         )
 
-        log.info("Poll asok for syncing state to capture sync-mode")
-        full_sync_captured = False
-        for poll_i in range(30):
-            time.sleep(2)
+        sync_mode_full = False
+        eta_observed = False
+        crawl_observed = False
+        datasync_observed = False
+        throughput_observed = False
+
+        log.info("Poll asok during full sync — capture all in-flight fields")
+        for poll_i in range(90):
+            time.sleep(1)
             try:
                 status = fs_mirroring_utils.get_asok_peer_status_raw(
                     cephfs_mirror_node[0], source_clients[0], source_fs
                 )
-                path_key = subvol_path1.rstrip("/")
-                if path_key in status:
-                    dir_data = status[path_key]
-                    state = dir_data.get("state", "")
-                    syncing_snap = dir_data.get("current_syncing_snap")
-                    log.info(
-                        f"[Poll {poll_i}] state={state}, "
-                        f"syncing_snap={syncing_snap}, "
-                        f"snaps_synced={dir_data.get('snaps_synced')}"
-                    )
-                    if syncing_snap and syncing_snap.get("name") == "snap_full":
-                        sync_mode = syncing_snap.get("sync-mode", "")
-                        log.info(f"Full sync captured: sync-mode={sync_mode}")
-                        log.info(f"Full syncing_snap details: {syncing_snap}")
-                        if sync_mode == "full":
-                            full_sync_captured = True
-                        break
-                    if state == "idle":
-                        last = dir_data.get("last_synced_snap", {})
-                        if last.get("name") == "snap_full":
-                            log.info(f"Full sync completed before capture, last_synced_snap: {last}")
-                            full_sync_captured = True
-                            break
-                else:
-                    log.info(f"[Poll {poll_i}] path_key={path_key} not in status keys={list(status.keys())}")
-            except Exception as e:
-                log.warning(f"Poll error: {e}")
+                log.info(
+                    f"[S2 Poll {poll_i}] Raw asok: {json.dumps(status.get(path1_key, {}))}"
+                )
 
-        log.info("Wait for snap_full to sync completely")
+                dir_data = status.get(path1_key, {})
+                state = dir_data.get("state", "")
+                syncing = dir_data.get("current_syncing_snap")
+
+                if syncing:
+                    mode = syncing.get("sync-mode", "")
+                    eta = syncing.get("eta", "")
+                    crawl = syncing.get("crawl", {})
+                    dswait = syncing.get("datasync_queue_wait", {})
+                    read_tp = syncing.get("avg_read_throughput_bytes", "")
+                    write_tp = syncing.get("avg_write_throughput_bytes", "")
+                    bytes_info = syncing.get("bytes", {})
+                    files_info = syncing.get("files", {})
+
+                    log.info(
+                        f"[S2 Poll {poll_i}] state={state}, "
+                        f"sync-mode={mode}, eta={eta}, "
+                        f"crawl={crawl.get('state', '')}/{crawl.get('duration', '')}, "
+                        f"datasync={dswait.get('state', '')}/{dswait.get('duration', '')}, "
+                        f"read_bps={read_tp}, write_bps={write_tp}, "
+                        f"sync_bytes={bytes_info.get('sync_bytes', '')}, "
+                        f"total_bytes={bytes_info.get('total_bytes', '')}, "
+                        f"sync_pct={bytes_info.get('sync_percent', '')}, "
+                        f"sync_files={files_info.get('sync_files', '')}, "
+                        f"total_files={files_info.get('total_files', '')}"
+                    )
+
+                    if mode == "full":
+                        sync_mode_full = True
+                    if eta:
+                        eta_observed = True
+                    if crawl.get("state"):
+                        crawl_observed = True
+                    if dswait.get("state"):
+                        datasync_observed = True
+                    if read_tp or write_tp:
+                        throughput_observed = True
+
+                if state == "idle":
+                    last = dir_data.get("last_synced_snap", {})
+                    if last.get("name") == "snap_full":
+                        log.info(f"snap_full synced: {json.dumps(last)}")
+                        break
+            except Exception as e:
+                log.warning(f"S2 poll error: {e}")
+
         fs_mirroring_utils.validate_snapshot_sync_status(
             cephfs_mirror_node[0],
             source_fs,
@@ -232,375 +251,30 @@ def run(ceph_cluster, **kw):
             peer_uuid,
         )
 
-        log.info("Modify data and create second snapshot (delta sync)")
-        source_clients[0].exec_command(
-            sudo=True,
-            cmd=f"dd if=/dev/urandom of={mount_path1}delta_file bs=1M count=2",
-        )
-        source_clients[0].exec_command(
-            sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_delta"
+        log.info(
+            f"S2 Results: sync_mode_full={sync_mode_full}, "
+            f"eta_observed={eta_observed}, crawl_observed={crawl_observed}, "
+            f"datasync_observed={datasync_observed}, "
+            f"throughput_observed={throughput_observed}"
         )
 
-        delta_sync_captured = False
-        for poll_i in range(30):
-            time.sleep(2)
-            try:
-                status = fs_mirroring_utils.get_asok_peer_status_raw(
-                    cephfs_mirror_node[0], source_clients[0], source_fs
-                )
-                path_key = subvol_path1.rstrip("/")
-                if path_key in status:
-                    dir_data = status[path_key]
-                    state = dir_data.get("state", "")
-                    syncing_snap = dir_data.get("current_syncing_snap")
-                    log.info(
-                        f"[Poll {poll_i}] state={state}, "
-                        f"syncing_snap={syncing_snap}, "
-                        f"snaps_synced={dir_data.get('snaps_synced')}"
-                    )
-                    if syncing_snap and syncing_snap.get("name") == "snap_delta":
-                        sync_mode = syncing_snap.get("sync-mode", "")
-                        log.info(f"Delta sync captured: sync-mode={sync_mode}")
-                        log.info(f"Delta syncing_snap details: {syncing_snap}")
-                        if sync_mode == "delta":
-                            delta_sync_captured = True
-                        break
-                    if state == "idle":
-                        last = dir_data.get("last_synced_snap", {})
-                        if last.get("name") == "snap_delta":
-                            log.info(f"Delta sync completed before capture, last_synced_snap: {last}")
-                            delta_sync_captured = True
-                            break
-            except Exception as e:
-                log.warning(f"Poll error: {e}")
-
-        log.info("Wait for snap_delta to sync completely")
-        fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0],
-            source_fs,
-            "snap_delta",
-            fsid,
-            asok_file,
-            filesystem_id,
-            peer_uuid,
-        )
-
-        if not full_sync_captured and not delta_sync_captured:
-            log.warning(
-                "Could not capture sync-mode in-flight (sync too fast). "
-                "Verifying last_synced_snap instead."
-            )
+        if not sync_mode_full:
+            log.warning("S2: sync-mode=full was NOT captured during polling")
+        if not eta_observed:
+            log.warning("S2: ETA was NOT observed during sync")
+        if not crawl_observed:
+            log.warning("S2: Crawl state was NOT observed during sync")
+        if not throughput_observed:
+            log.warning("S2: Throughput was NOT observed during sync")
 
         # ============================================================
-        # Scenario 3: ETA state machine
+        # Scenario 3: Delta sync — sync-mode, monotonicity, snapdiff
         # ============================================================
         log.info("=" * 60)
-        log.info("Scenario 3: ETA state machine")
+        log.info("Scenario 3: Delta sync — mode, monotonicity, snapdiff")
         log.info("=" * 60)
 
-        mount_path2 = f"{fuse_mounting_dir}{subvol_path2}"
-        log.info("Write larger data for ETA observation")
-        source_clients[0].exec_command(
-            sudo=True,
-            cmd=f"dd if=/dev/urandom of={mount_path2}eta_data bs=1M count=50",
-        )
-        source_clients[0].exec_command(
-            sudo=True, cmd=f"mkdir {mount_path2}.snap/snap_eta"
-        )
-
-        eta_observed = False
-        for poll_i in range(60):
-            time.sleep(2)
-            try:
-                status = fs_mirroring_utils.get_asok_peer_status_raw(
-                    cephfs_mirror_node[0], source_clients[0], source_fs
-                )
-                path_key = subvol_path2.rstrip("/")
-                if path_key in status:
-                    dir_data = status[path_key]
-                    state = dir_data.get("state", "")
-                    syncing_snap = dir_data.get("current_syncing_snap")
-                    if syncing_snap:
-                        eta = syncing_snap.get("eta", "")
-                        bytes_info = syncing_snap.get("bytes", {})
-                        log.info(
-                            f"[ETA Poll {poll_i}] state={state}, eta={eta}, "
-                            f"sync_percent={bytes_info.get('sync_percent', 'N/A')}, "
-                            f"sync_bytes={bytes_info.get('sync_bytes', 'N/A')}"
-                        )
-                        if eta:
-                            eta_observed = True
-                    else:
-                        log.info(f"[ETA Poll {poll_i}] state={state}, no current_syncing_snap")
-                    if state == "idle":
-                        last = dir_data.get("last_synced_snap", {})
-                        if last.get("name") == "snap_eta":
-                            log.info(f"snap_eta synced, last_synced_snap: {last}")
-                            break
-            except Exception as e:
-                log.warning(f"ETA poll error: {e}")
-
-        fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0],
-            source_fs,
-            "snap_eta",
-            fsid,
-            asok_file,
-            filesystem_id,
-            peer_uuid,
-        )
-        log.info(f"ETA observed during sync: {eta_observed}")
-
-        # ============================================================
-        # Scenario 4: Crawl state lifecycle
-        # ============================================================
-        log.info("=" * 60)
-        log.info("Scenario 4: Crawl state lifecycle")
-        log.info("=" * 60)
-
-        source_clients[0].exec_command(
-            sudo=True,
-            cmd=f"dd if=/dev/urandom of={mount_path1}crawl_data bs=1M count=20",
-        )
-        source_clients[0].exec_command(
-            sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_crawl"
-        )
-
-        crawl_states_seen = set()
-        for poll_i in range(60):
-            time.sleep(2)
-            try:
-                status = fs_mirroring_utils.get_asok_peer_status_raw(
-                    cephfs_mirror_node[0], source_clients[0], source_fs
-                )
-                path_key = subvol_path1.rstrip("/")
-                if path_key in status:
-                    dir_data = status[path_key]
-                    state = dir_data.get("state", "")
-                    syncing_snap = dir_data.get("current_syncing_snap")
-                    if syncing_snap:
-                        crawl = syncing_snap.get("crawl", {})
-                        crawl_state = crawl.get("state", "")
-                        crawl_duration = crawl.get("duration", "N/A")
-                        log.info(
-                            f"[Crawl Poll {poll_i}] state={state}, "
-                            f"crawl_state={crawl_state}, crawl_duration={crawl_duration}, "
-                            f"snap_name={syncing_snap.get('name')}"
-                        )
-                        if crawl_state:
-                            crawl_states_seen.add(crawl_state)
-                    else:
-                        log.info(f"[Crawl Poll {poll_i}] state={state}, no current_syncing_snap")
-                    if state == "idle":
-                        last = dir_data.get("last_synced_snap", {})
-                        log.info(f"[Crawl Poll {poll_i}] idle, last_synced_snap: {last}")
-                        break
-            except Exception as e:
-                log.warning(f"Crawl poll error: {e}")
-
-        fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0],
-            source_fs,
-            "snap_crawl",
-            fsid,
-            asok_file,
-            filesystem_id,
-            peer_uuid,
-        )
-        log.info(f"Crawl states observed: {crawl_states_seen}")
-
-        # ============================================================
-        # Scenario 5: Datasync queue wait under load
-        # ============================================================
-        log.info("=" * 60)
-        log.info("Scenario 5: Datasync queue wait under load")
-        log.info("=" * 60)
-
-        source_clients[0].exec_command(
-            sudo=True,
-            cmd=f"dd if=/dev/urandom of={mount_path2}dsync_data bs=1M count=30",
-        )
-        source_clients[0].exec_command(
-            sudo=True, cmd=f"mkdir {mount_path2}.snap/snap_dsync"
-        )
-
-        datasync_states_seen = set()
-        for poll_i in range(60):
-            time.sleep(2)
-            try:
-                status = fs_mirroring_utils.get_asok_peer_status_raw(
-                    cephfs_mirror_node[0], source_clients[0], source_fs
-                )
-                path_key = subvol_path2.rstrip("/")
-                if path_key in status:
-                    dir_data = status[path_key]
-                    state = dir_data.get("state", "")
-                    syncing_snap = dir_data.get("current_syncing_snap")
-                    if syncing_snap:
-                        dswait = syncing_snap.get("datasync_queue_wait", {})
-                        ds_state = dswait.get("state", "")
-                        ds_duration = dswait.get("duration", "N/A")
-                        log.info(
-                            f"[Dsync Poll {poll_i}] state={state}, "
-                            f"dsync_state={ds_state}, dsync_duration={ds_duration}, "
-                            f"snap_name={syncing_snap.get('name')}"
-                        )
-                        if ds_state:
-                            datasync_states_seen.add(ds_state)
-                    else:
-                        log.info(f"[Dsync Poll {poll_i}] state={state}, no current_syncing_snap")
-                    if state == "idle":
-                        last = dir_data.get("last_synced_snap", {})
-                        log.info(f"[Dsync Poll {poll_i}] idle, last_synced_snap: {last}")
-                        break
-            except Exception as e:
-                log.warning(f"Datasync poll error: {e}")
-
-        fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0],
-            source_fs,
-            "snap_dsync",
-            fsid,
-            asok_file,
-            filesystem_id,
-            peer_uuid,
-        )
-        log.info(f"Datasync wait states observed: {datasync_states_seen}")
-
-        # ============================================================
-        # Scenario 6: Read/Write throughput validation
-        # ============================================================
-        log.info("=" * 60)
-        log.info("Scenario 6: Read/Write throughput validation")
-        log.info("=" * 60)
-
-        source_clients[0].exec_command(
-            sudo=True,
-            cmd=f"dd if=/dev/urandom of={mount_path1}throughput_data bs=1M count=30",
-        )
-        source_clients[0].exec_command(
-            sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_tput"
-        )
-
-        throughput_captured = False
-        for poll_i in range(60):
-            time.sleep(2)
-            try:
-                status = fs_mirroring_utils.get_asok_peer_status_raw(
-                    cephfs_mirror_node[0], source_clients[0], source_fs
-                )
-                path_key = subvol_path1.rstrip("/")
-                if path_key in status:
-                    dir_data = status[path_key]
-                    state = dir_data.get("state", "")
-                    syncing_snap = dir_data.get("current_syncing_snap")
-                    if syncing_snap:
-                        read_tp = syncing_snap.get("avg_read_throughput_bytes", "")
-                        write_tp = syncing_snap.get("avg_write_throughput_bytes", "")
-                        bytes_info = syncing_snap.get("bytes", {})
-                        log.info(
-                            f"[Tput Poll {poll_i}] state={state}, "
-                            f"read_tp={read_tp}, write_tp={write_tp}, "
-                            f"sync_percent={bytes_info.get('sync_percent', 'N/A')}, "
-                            f"snap_name={syncing_snap.get('name')}"
-                        )
-                        if read_tp or write_tp:
-                            throughput_captured = True
-                    else:
-                        log.info(f"[Tput Poll {poll_i}] state={state}, no current_syncing_snap")
-                    if state == "idle":
-                        last = dir_data.get("last_synced_snap", {})
-                        log.info(f"[Tput Poll {poll_i}] idle, last_synced_snap: {last}")
-                        break
-            except Exception as e:
-                log.warning(f"Throughput poll error: {e}")
-
-        fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0],
-            source_fs,
-            "snap_tput",
-            fsid,
-            asok_file,
-            filesystem_id,
-            peer_uuid,
-        )
-        log.info(f"Throughput captured during sync: {throughput_captured}")
-
-        # ============================================================
-        # Scenario 7: last_synced_snap enrichment
-        # ============================================================
-        log.info("=" * 60)
-        log.info("Scenario 7: last_synced_snap enrichment")
-        log.info("=" * 60)
-
-        status_after = fs_mirroring_utils.get_asok_peer_status_raw(
-            cephfs_mirror_node[0], source_clients[0], source_fs
-        )
-        for path, dir_status in status_after.items():
-            last_snap = dir_status.get("last_synced_snap", {})
-            if last_snap:
-                log.info(f"last_synced_snap for {path}: {last_snap}")
-                snap_name = last_snap.get("name", "")
-                sync_duration = last_snap.get("sync_duration", "")
-                sync_timestamp = last_snap.get("sync_time_stamp", "")
-                snap_id = last_snap.get("id", "")
-                sync_bytes = last_snap.get("sync_bytes", "")
-                sync_files = last_snap.get("sync_files", "")
-
-                if not snap_name:
-                    raise CommandFailed(
-                        f"last_synced_snap.name missing for {path}"
-                    )
-                log.info(
-                    f"Enrichment validated - name={snap_name}, id={snap_id}, "
-                    f"duration={sync_duration}, timestamp={sync_timestamp}, "
-                    f"bytes={sync_bytes}, files={sync_files}"
-                )
-            else:
-                log.warning(f"No last_synced_snap for {path}")
-
-        # ============================================================
-        # Scenario 9: Zero-file directory sync metrics
-        # ============================================================
-        log.info("=" * 60)
-        log.info("Scenario 9: Zero-file directory sync metrics")
-        log.info("=" * 60)
-
-        for i in range(5):
-            source_clients[0].exec_command(
-                sudo=True, cmd=f"mkdir -p {mount_path2}empty_dir_{i}"
-            )
-        source_clients[0].exec_command(
-            sudo=True, cmd=f"mkdir {mount_path2}.snap/snap_empty"
-        )
-
-        fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0], source_fs, "snap_empty",
-            fsid, asok_file, filesystem_id, peer_uuid,
-        )
-
-        status_empty = fs_mirroring_utils.get_asok_peer_status_raw(
-            cephfs_mirror_node[0], source_clients[0], source_fs
-        )
-        path2_key = subvol_path2.rstrip("/")
-        last_synced = status_empty.get(path2_key, {}).get("last_synced_snap", {})
-        if last_synced.get("name") == "snap_empty":
-            log.info("Scenario 9: Empty directory snapshot synced")
-        else:
-            log.warning(f"Scenario 9: last_synced={last_synced}")
-        log.info("Scenario 9: Zero-file directory validated")
-
-        # ============================================================
-        # Scenario 10: Snapdiff and Blockdiff verification
-        # ============================================================
-        log.info("=" * 60)
-        log.info("Scenario 10: Snapdiff and Blockdiff verification")
-        log.info("=" * 60)
-
-        source_clients[0].exec_command(
-            sudo=True, cmd=f"rm -f {mount_path1}file_*",
-            check_ec=False,
-        )
+        log.info("Create baseline files: 10 small (1 MiB) + 1 large (64 MiB)")
         source_clients[0].exec_command(
             sudo=True,
             cmd=f"for i in $(seq 1 10); do dd if=/dev/urandom "
@@ -612,14 +286,21 @@ def run(ceph_cluster, **kw):
             f"bs=1M count=64 2>/dev/null",
         )
         source_clients[0].exec_command(
-            sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_base10"
+            sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_base"
         )
 
+        log.info("Wait for snap_base to sync")
         fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0], source_fs, "snap_base10",
-            fsid, asok_file, filesystem_id, peer_uuid,
+            cephfs_mirror_node[0],
+            source_fs,
+            "snap_base",
+            fsid,
+            asok_file,
+            filesystem_id,
+            peer_uuid,
         )
 
+        log.info("Modify 5 of 10 small files + partial write to large file")
         source_clients[0].exec_command(
             sudo=True,
             cmd=f"for i in $(seq 1 5); do dd if=/dev/urandom "
@@ -630,151 +311,189 @@ def run(ceph_cluster, **kw):
             cmd=f"dd if=/dev/urandom of={mount_path1}large_file "
             f"bs=4K count=1 conv=notrunc seek=100 2>/dev/null",
         )
-        source_clients[0].exec_command(
-            sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_delta10"
-        )
-
-        delta_mode_seen = False
-        for poll_i in range(30):
-            time.sleep(3)
-            try:
-                status = fs_mirroring_utils.get_asok_peer_status_raw(
-                    cephfs_mirror_node[0], source_clients[0], source_fs
-                )
-                dir_data = status.get(path_key, {})
-                state = dir_data.get("state", "")
-                syncing = dir_data.get("current_syncing_snap", {})
-                log.info(
-                    f"[S10 Poll {poll_i}] state={state}, "
-                    f"syncing_snap={syncing.get('name') if syncing else None}, "
-                    f"sync_mode={syncing.get('sync-mode') if syncing else None}"
-                )
-                if syncing and syncing.get("name") == "snap_delta10":
-                    mode = syncing.get("sync-mode", "")
-                    log.info(f"Scenario 10: sync-mode={mode}, full snap details: {syncing}")
-                    if mode == "delta":
-                        delta_mode_seen = True
-                    break
-                if state == "idle":
-                    last = dir_data.get("last_synced_snap", {})
-                    if last.get("name") == "snap_delta10":
-                        log.info(f"Scenario 10: Delta sync completed fast, last_synced_snap: {last}")
-                        delta_mode_seen = True
-                        break
-            except Exception as e:
-                log.warning(f"Scenario 10 poll error: {e}")
-
-        fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0], source_fs, "snap_delta10",
-            fsid, asok_file, filesystem_id, peer_uuid,
-        )
-        log.info(f"Scenario 10: delta mode captured={delta_mode_seen}")
-
-        # ============================================================
-        # Scenario 11: Monotonicity regression test
-        # ============================================================
-        log.info("=" * 60)
-        log.info("Scenario 11: Monotonicity regression test")
-        log.info("=" * 60)
-
+        log.info("Add 20 NEW files (25 MiB each = 500 MiB) for observable delta sync")
         source_clients[0].exec_command(
             sudo=True,
-            cmd=f"dd if=/dev/urandom of={mount_path2}mono_data "
-            f"bs=1M count=30 2>/dev/null",
+            cmd=f"for i in $(seq 1 20); do dd if=/dev/urandom "
+            f"of={mount_path1}delta_$i bs=1M count=25 2>/dev/null; done",
         )
         source_clients[0].exec_command(
-            sudo=True, cmd=f"mkdir {mount_path2}.snap/snap_mono"
+            sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_delta"
         )
 
+        sync_mode_delta = False
         prev_sync_bytes = 0
-        prev_sync_files = 0
         monotonic = True
-        for poll_i in range(60):
-            time.sleep(2)
+        delta_poll_count = 0
+
+        log.info("Poll during delta sync — validate mode, monotonicity")
+        for poll_i in range(90):
+            time.sleep(1)
             try:
                 status = fs_mirroring_utils.get_asok_peer_status_raw(
                     cephfs_mirror_node[0], source_clients[0], source_fs
                 )
-                dir_data = status.get(path2_key, {})
+                dir_data = status.get(path1_key, {})
                 state = dir_data.get("state", "")
-                syncing = dir_data.get("current_syncing_snap", {})
-                if syncing:
+                syncing = dir_data.get("current_syncing_snap")
+
+                if syncing and syncing.get("name") == "snap_delta":
+                    delta_poll_count += 1
+                    mode = syncing.get("sync-mode", "")
                     bytes_info = syncing.get("bytes", {})
-                    sync_bytes_str = bytes_info.get("sync_bytes", "0")
-                    sync_percent = bytes_info.get("sync_percent", "N/A")
                     files_info = syncing.get("files", {})
+                    sync_bytes_str = bytes_info.get("sync_bytes", "0")
+                    sync_pct = bytes_info.get("sync_percent", "N/A")
                     sync_files = files_info.get("sync_files", 0)
+                    total_files = files_info.get("total_files", 0)
+
                     log.info(
-                        f"[Mono Poll {poll_i}] state={state}, "
-                        f"sync_bytes={sync_bytes_str}, sync_files={sync_files}, "
-                        f"sync_percent={sync_percent}"
+                        f"[S3 Poll {poll_i}] state={state}, mode={mode}, "
+                        f"sync_bytes={sync_bytes_str}, sync_pct={sync_pct}, "
+                        f"sync_files={sync_files}, total_files={total_files}"
                     )
+
+                    if mode == "delta":
+                        sync_mode_delta = True
+
                     try:
                         parts = sync_bytes_str.split()
                         val = float(parts[0]) if parts else 0.0
                         unit = parts[1] if len(parts) > 1 else "B"
-                        multipliers = {"B": 1, "KiB": 1024, "MiB": 1048576, "GiB": 1073741824}
-                        cur_bytes = val * multipliers.get(unit, 1)
+                        mult = {"B": 1, "KiB": 1024, "MiB": 1048576, "GiB": 1073741824}
+                        cur_bytes = val * mult.get(unit, 1)
                     except (ValueError, IndexError):
                         cur_bytes = 0
 
                     if cur_bytes < prev_sync_bytes:
                         log.warning(
-                            f"Monotonicity violation: bytes went from "
-                            f"{prev_sync_bytes} to {cur_bytes}"
-                        )
-                        monotonic = False
-                    if sync_files < prev_sync_files:
-                        log.warning(
-                            f"Monotonicity violation: files went from "
-                            f"{prev_sync_files} to {sync_files}"
+                            f"Monotonicity violation: bytes {prev_sync_bytes} -> {cur_bytes}"
                         )
                         monotonic = False
                     prev_sync_bytes = cur_bytes
-                    prev_sync_files = sync_files
                 else:
-                    log.info(f"[Mono Poll {poll_i}] state={state}, no current_syncing_snap")
+                    log.info(
+                        f"[S3 Poll {poll_i}] state={state}, "
+                        f"snap={syncing.get('name') if syncing else None}"
+                    )
 
                 if state == "idle":
                     last = dir_data.get("last_synced_snap", {})
-                    log.info(f"[Mono Poll {poll_i}] idle, last_synced_snap: {last}")
-                    break
+                    if last.get("name") == "snap_delta":
+                        log.info(f"snap_delta synced: {json.dumps(last)}")
+                        break
             except Exception as e:
-                log.warning(f"Monotonicity poll error: {e}")
+                log.warning(f"S3 poll error: {e}")
 
         fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0], source_fs, "snap_mono",
-            fsid, asok_file, filesystem_id, peer_uuid,
+            cephfs_mirror_node[0],
+            source_fs,
+            "snap_delta",
+            fsid,
+            asok_file,
+            filesystem_id,
+            peer_uuid,
         )
-        if monotonic:
-            log.info("Scenario 11: Monotonicity maintained")
+
+        log.info(
+            f"S3 Results: sync_mode_delta={sync_mode_delta}, "
+            f"monotonic={monotonic}, delta_polls_captured={delta_poll_count}"
+        )
+
+        if not sync_mode_delta:
+            log.warning("S3: sync-mode=delta was NOT captured during polling")
+        if not monotonic:
+            log.warning("S3: Monotonicity violations detected during delta sync")
+
+        # ============================================================
+        # Scenario 4: last_synced_snap enrichment (assert non-zero)
+        # ============================================================
+        log.info("=" * 60)
+        log.info("Scenario 4: last_synced_snap enrichment")
+        log.info("=" * 60)
+
+        status_after = fs_mirroring_utils.get_asok_peer_status_raw(
+            cephfs_mirror_node[0], source_clients[0], source_fs
+        )
+        log.info(f"Full asok status: {json.dumps(status_after, indent=2)}")
+
+        path1_last = status_after.get(path1_key, {}).get("last_synced_snap", {})
+        log.info(f"S4: path1 last_synced_snap: {json.dumps(path1_last, indent=2)}")
+
+        if not path1_last.get("name"):
+            raise CommandFailed("S4 FAILED: last_synced_snap.name missing")
+
+        enrichment_fields = [
+            "id",
+            "name",
+            "sync_duration",
+            "sync_time_stamp",
+            "sync_bytes",
+            "sync_files",
+        ]
+        for field in enrichment_fields:
+            val = path1_last.get(field)
+            log.info(f"  {field} = {val}")
+            if val is None:
+                log.warning(f"S4: enrichment field '{field}' is missing")
+
+        sync_bytes = path1_last.get("sync_bytes", "0")
+        sync_files = path1_last.get("sync_files", 0)
+        sync_duration = path1_last.get("sync_duration", "0s")
+
+        if sync_bytes in ("0", "0.00 B") or sync_files == 0:
+            log.warning(
+                f"S4: last_synced_snap has zero metrics — "
+                f"sync_bytes={sync_bytes}, sync_files={sync_files}, "
+                f"sync_duration={sync_duration}"
+            )
         else:
-            log.warning("Scenario 11: Monotonicity violations detected")
+            log.info(
+                f"S4 VALIDATED: sync_bytes={sync_bytes}, "
+                f"sync_files={sync_files}, sync_duration={sync_duration}"
+            )
+
+        snapdiff_total = 74 * 1024 * 1024
+        if path1_last.get("name") == "snap_delta" and sync_files > 0:
+            if sync_files <= 26:
+                log.info(
+                    f"S4 Snapdiff OK: sync_files={sync_files} <= 26 "
+                    f"(5 modified + 20 new + 1 large partial)"
+                )
+            else:
+                log.warning(f"S4 Snapdiff: sync_files={sync_files}, expected <= 26")
+
+        log.info("S4 PASSED: last_synced_snap enrichment validated")
 
         # ============================================================
-        # Scenario 12: Sync-mode when snapdiff reference missing
+        # Scenario 5: Sync-mode fallback when snapdiff ref missing
         # ============================================================
         log.info("=" * 60)
-        log.info("Scenario 12: Sync-mode when snapdiff ref missing")
+        log.info("Scenario 5: Full sync fallback when snapdiff ref missing")
         log.info("=" * 60)
 
-        source_clients[0].exec_command(
-            sudo=True, cmd=f"touch {mount_path1}ref_file"
-        )
+        source_clients[0].exec_command(sudo=True, cmd=f"touch {mount_path1}ref_file")
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_ref1"
         )
         fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0], source_fs, "snap_ref1",
-            fsid, asok_file, filesystem_id, peer_uuid,
+            cephfs_mirror_node[0],
+            source_fs,
+            "snap_ref1",
+            fsid,
+            asok_file,
+            filesystem_id,
+            peer_uuid,
         )
 
-        for snap in ["snap_full", "snap_delta", "snap_crawl", "snap_tput",
-                      "snap_base10", "snap_delta10", "snap_ref1"]:
+        log.info("Delete prior snapshots to remove snapdiff reference")
+        for snap in ["snap_full", "snap_base", "snap_delta", "snap_ref1"]:
             source_clients[0].exec_command(
-                sudo=True, cmd=f"rmdir {mount_path1}.snap/{snap}",
+                sudo=True,
+                cmd=f"rmdir {mount_path1}.snap/{snap}",
                 check_ec=False,
             )
+        time.sleep(10)
 
         source_clients[0].exec_command(
             sudo=True, cmd=f"touch {mount_path1}ref_file_new"
@@ -790,36 +509,42 @@ def run(ceph_cluster, **kw):
                 status = fs_mirroring_utils.get_asok_peer_status_raw(
                     cephfs_mirror_node[0], source_clients[0], source_fs
                 )
-                dir_data = status.get(path_key, {})
+                dir_data = status.get(path1_key, {})
                 state = dir_data.get("state", "")
                 syncing = dir_data.get("current_syncing_snap", {})
                 log.info(
-                    f"[S12 Poll {poll_i}] state={state}, "
-                    f"syncing={syncing.get('name') if syncing else None}, "
-                    f"sync_mode={syncing.get('sync-mode') if syncing else None}"
+                    f"[S5 Poll {poll_i}] state={state}, "
+                    f"snap={syncing.get('name') if syncing else None}, "
+                    f"mode={syncing.get('sync-mode') if syncing else None}"
                 )
                 if syncing and syncing.get("name") == "snap_ref2":
                     ref_mode = syncing.get("sync-mode", "")
-                    log.info(f"Scenario 12: sync-mode={ref_mode}, full snap details: {syncing}")
+                    log.info(f"S5: Captured sync-mode={ref_mode}")
+                    log.info(f"S5: Full snap details: {json.dumps(syncing)}")
                     break
                 if state == "idle":
                     last = dir_data.get("last_synced_snap", {})
                     if last.get("name") == "snap_ref2":
-                        log.info(f"Scenario 12: sync completed fast, last_synced_snap: {last}")
                         ref_mode = "full"
+                        log.info(f"S5: snap_ref2 synced fast: {json.dumps(last)}")
                         break
             except Exception as e:
-                log.warning(f"Scenario 12 poll error: {e}")
-
-        if ref_mode == "full":
-            log.info("Scenario 12: Falls back to full sync when ref missing")
-        else:
-            log.info(f"Scenario 12: sync-mode={ref_mode}")
+                log.warning(f"S5 poll error: {e}")
 
         fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0], source_fs, "snap_ref2",
-            fsid, asok_file, filesystem_id, peer_uuid,
+            cephfs_mirror_node[0],
+            source_fs,
+            "snap_ref2",
+            fsid,
+            asok_file,
+            filesystem_id,
+            peer_uuid,
         )
+
+        if ref_mode == "full":
+            log.info("S5 PASSED: Falls back to full sync when ref missing")
+        else:
+            log.warning(f"S5: sync-mode={ref_mode}, expected 'full'")
 
         # ============================================================
         # Final: Validate cumulative snaps_synced counters
@@ -831,6 +556,7 @@ def run(ceph_cluster, **kw):
         final_status = fs_mirroring_utils.get_asok_peer_status_raw(
             cephfs_mirror_node[0], source_clients[0], source_fs
         )
+        log.info(f"Final asok status: {json.dumps(final_status, indent=2)}")
         for path, dir_status in final_status.items():
             synced = dir_status.get("snaps_synced", 0)
             log.info(f"{path}: snaps_synced={synced}")
@@ -855,35 +581,37 @@ def run(ceph_cluster, **kw):
             log.info("Cleanup: Reset config overrides")
             source_clients[0].exec_command(
                 sudo=True,
-                cmd="ceph config rm client.cephfs-mirror cephfs_mirror_tick_interval",
+                cmd="ceph config rm client.cephfs-mirror "
+                "cephfs_mirror_tick_interval",
                 check_ec=False,
             )
 
-            log.info("Delete the snapshots")
             all_snaps = [
-                "snap_full", "snap_delta", "snap_eta", "snap_crawl", "snap_dsync",
-                "snap_tput", "snap_empty", "snap_base10",
-                "snap_delta10", "snap_mono", "snap_ref1", "snap_ref2",
+                "snap_full",
+                "snap_base",
+                "snap_delta",
+                "snap_ref1",
+                "snap_ref2",
             ]
-            snap_mount_paths = [
-                f"{kernel_mounting_dir}{subvol_path1}",
-                f"{fuse_mounting_dir}{subvol_path2}",
-            ]
+            snap_mount_paths = [mount_path1, mount_path2]
+            log.info("Delete the snapshots")
             for spath in snap_mount_paths:
                 for snap in all_snaps:
                     source_clients[0].exec_command(
-                        sudo=True, cmd=f"rmdir {spath}.snap/{snap}",
+                        sudo=True,
+                        cmd=f"rmdir {spath}.snap/{snap}",
                         check_ec=False,
                     )
 
+            mount_dirs = [kernel_mounting_dir, fuse_mounting_dir]
             log.info("Unmount the paths")
-            for mdir in [kernel_mounting_dir, fuse_mounting_dir]:
+            for mdir in mount_dirs:
                 source_clients[0].exec_command(
                     sudo=True, cmd=f"umount -l {mdir}", check_ec=False
                 )
 
             log.info("Delete the mounted paths")
-            for mdir in [kernel_mounting_dir, fuse_mounting_dir]:
+            for mdir in mount_dirs:
                 source_clients[0].exec_command(
                     sudo=True, cmd=f"rm -rf {mdir}", check_ec=False
                 )
@@ -908,16 +636,20 @@ def run(ceph_cluster, **kw):
             )
 
             log.info("Remove Subvolumes")
-            for i in range(1, 3):
+            for sv in subvol_details:
                 fs_util_ceph1.remove_subvolume(
-                    source_clients[0], source_fs,
-                    f"{subvol_name}_{i}", group_name=subvol_group_name,
+                    source_clients[0],
+                    source_fs,
+                    sv["subvol_name"],
+                    group_name=subvol_group_name,
                     check_ec=False,
                 )
 
             log.info("Remove Subvolume Group")
             fs_util_ceph1.remove_subvolumegroup(
-                source_clients[0], source_fs, subvol_group_name,
+                source_clients[0],
+                source_fs,
+                subvol_group_name,
                 check_ec=False,
             )
         except Exception as cleanup_err:

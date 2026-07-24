@@ -2545,14 +2545,21 @@ class CephfsMirroringUtils(object):
         entries = data.get("cephfs_mirror_directory", [])
         if fs_name:
             entries = [
-                e for e in entries
+                e
+                for e in entries
                 if e.get("labels", {}).get("source_filesystem") == fs_name
             ]
         return entries
 
     def poll_asok_for_state(
-        self, cephfs_mirror_node, source_client, fs_name, path,
-        target_state, timeout=120, interval=5,
+        self,
+        cephfs_mirror_node,
+        source_client,
+        fs_name,
+        path,
+        target_state,
+        timeout=120,
+        interval=5,
     ):
         """
         Poll asok peer status until a directory reaches a target state.
@@ -2583,7 +2590,9 @@ class CephfsMirroringUtils(object):
                     state = status[path].get("state", "unknown")
                     log.info(
                         "poll_asok_for_state: %s state=%s (target=%s)",
-                        path, state, target_state,
+                        path,
+                        state,
+                        target_state,
                     )
                     if state == target_state:
                         return status[path]
@@ -2722,9 +2731,7 @@ def validate_peer_status_schema(peer_status, paths, expected_state=None):
             )
         status = peer_status[path_key]
 
-        missing_fields = [
-            f for f in PEER_STATUS_TOP_LEVEL_FIELDS if f not in status
-        ]
+        missing_fields = [f for f in PEER_STATUS_TOP_LEVEL_FIELDS if f not in status]
         if missing_fields:
             raise CommandFailed(
                 f"Path '{path_key}' missing required fields: {missing_fields}"
@@ -2763,10 +2770,12 @@ def validate_current_syncing_snap_schema(current_syncing_snap, strict=True):
     """
     if not current_syncing_snap or not isinstance(current_syncing_snap, dict):
         if strict:
-            raise CommandFailed(
-                "current_syncing_snap is empty or not a dict"
-            )
-        return {"fields_present": [], "fields_missing": CURRENT_SYNCING_SNAP_FIELDS, "values": {}}
+            raise CommandFailed("current_syncing_snap is empty or not a dict")
+        return {
+            "fields_present": [],
+            "fields_missing": CURRENT_SYNCING_SNAP_FIELDS,
+            "values": {},
+        }
 
     present = []
     missing = []

@@ -12,8 +12,16 @@ from utility.log import Log
 log = Log(__name__)
 
 
-def collect_tri_interface(fs_mirroring_utils, cephfs_mirror_node, source_client,
-                          source_fs, fsid, asok_file, subvol_path, label=""):
+def collect_tri_interface(
+    fs_mirroring_utils,
+    cephfs_mirror_node,
+    source_client,
+    source_fs,
+    fsid,
+    asok_file,
+    subvol_path,
+    label="",
+):
     """
     Collect metrics from all three interfaces (Asok, MGR, Perf counters)
     for a given directory path. Returns a dict with keys: asok, mgr, perf.
@@ -36,9 +44,7 @@ def collect_tri_interface(fs_mirroring_utils, cephfs_mirror_node, source_client,
         log.warning(f"{prefix} Asok query failed: {e}")
 
     try:
-        mgr_status = fs_mirroring_utils.get_mgr_mirror_status(
-            source_client, source_fs
-        )
+        mgr_status = fs_mirroring_utils.get_mgr_mirror_status(source_client, source_fs)
         path_key = subvol_path.rstrip("/")
         mgr_metrics = mgr_status.get("metrics", {})
         mgr_path_data = mgr_metrics.get(path_key, {})
@@ -54,9 +60,13 @@ def collect_tri_interface(fs_mirroring_utils, cephfs_mirror_node, source_client,
 
     try:
         data = fs_mirroring_utils.get_cephfs_mirror_counters(
-            [cephfs_mirror_node] if not isinstance(cephfs_mirror_node, list)
-            else cephfs_mirror_node,
-            fsid, asok_file,
+            (
+                [cephfs_mirror_node]
+                if not isinstance(cephfs_mirror_node, list)
+                else cephfs_mirror_node
+            ),
+            fsid,
+            asok_file,
         )
         path_key = subvol_path.rstrip("/")
         for entry in data.get("cephfs_mirror_directory", []):
@@ -138,9 +148,7 @@ def run(ceph_cluster, **kw):
             cmd="ceph config set mgr mgr/mirroring/snapshot_mirror_metrics_cache_ttl 3",
         )
         log.info("Restart cephfs-mirror daemon for tick_interval to take effect")
-        source_clients[0].exec_command(
-            sudo=True, cmd="ceph orch restart cephfs-mirror"
-        )
+        source_clients[0].exec_command(sudo=True, cmd="ceph orch restart cephfs-mirror")
         time.sleep(30)
 
         subvol_group_name = "subvolgroup_tri"
@@ -228,8 +236,13 @@ def run(ceph_cluster, **kw):
         for poll_i in range(90):
             time.sleep(1)
             tri = collect_tri_interface(
-                fs_mirroring_utils, cephfs_mirror_node[0], source_clients[0],
-                source_fs, fsid, asok_file, subvol_path1,
+                fs_mirroring_utils,
+                cephfs_mirror_node[0],
+                source_clients[0],
+                source_fs,
+                fsid,
+                asok_file,
+                subvol_path1,
                 label=f"S1-full Poll {poll_i}",
             )
             asok_state = tri["asok"].get("state", "unknown")
@@ -240,15 +253,9 @@ def run(ceph_cluster, **kw):
                 log.info("=== Tri-interface SYNCING state comparison ===")
                 asok_synced = tri["asok"].get("snaps_synced", 0)
                 mgr_synced = tri["mgr"].get("snaps_synced", 0)
-                log.info(
-                    f"  Asok:  state={asok_state}, snaps_synced={asok_synced}"
-                )
-                log.info(
-                    f"  MGR:   state={mgr_state}, snaps_synced={mgr_synced}"
-                )
-                log.info(
-                    f"  Perf:  dir_state={perf_dir_state} (1=syncing, 0=idle)"
-                )
+                log.info(f"  Asok:  state={asok_state}, snaps_synced={asok_synced}")
+                log.info(f"  MGR:   state={mgr_state}, snaps_synced={mgr_synced}")
+                log.info(f"  Perf:  dir_state={perf_dir_state} (1=syncing, 0=idle)")
 
                 asok_snap = tri["asok"].get("current_syncing_snap", {})
                 mgr_snap = tri["mgr"].get("current_syncing_snap", {})
@@ -317,13 +324,20 @@ def run(ceph_cluster, **kw):
                     break
 
         if not syncing_consistency_checked:
-            log.info("Sync completed too fast to capture syncing state across interfaces")
+            log.info(
+                "Sync completed too fast to capture syncing state across interfaces"
+            )
 
         log.info("Idle state: validate all 3 interfaces show idle consistently")
         time.sleep(5)
         tri_idle = collect_tri_interface(
-            fs_mirroring_utils, cephfs_mirror_node[0], source_clients[0],
-            source_fs, fsid, asok_file, subvol_path1,
+            fs_mirroring_utils,
+            cephfs_mirror_node[0],
+            source_clients[0],
+            source_fs,
+            fsid,
+            asok_file,
+            subvol_path1,
             label="S1-idle",
         )
         asok_idle = tri_idle["asok"].get("state", "")
@@ -380,8 +394,13 @@ def run(ceph_cluster, **kw):
         for poll_i in range(90):
             time.sleep(1)
             tri = collect_tri_interface(
-                fs_mirroring_utils, cephfs_mirror_node[0], source_clients[0],
-                source_fs, fsid, asok_file, subvol_path1,
+                fs_mirroring_utils,
+                cephfs_mirror_node[0],
+                source_clients[0],
+                source_fs,
+                fsid,
+                asok_file,
+                subvol_path1,
                 label=f"S1-delta Poll {poll_i}",
             )
             asok_state = tri["asok"].get("state", "unknown")
@@ -434,14 +453,23 @@ def run(ceph_cluster, **kw):
         target_mount_fail = "/mnt/tri_fail_target"
         try:
             fs_mirroring_utils.inject_sync_failure(
-                target_clients[0], target_mount_fail, "client.admin",
-                subvol_path2, "snap_conflict", target_fs,
+                target_clients[0],
+                target_mount_fail,
+                "client.admin",
+                subvol_path2,
+                "snap_conflict",
+                target_fs,
             )
             time.sleep(30)
 
             tri_fail = collect_tri_interface(
-                fs_mirroring_utils, cephfs_mirror_node[0], source_clients[0],
-                source_fs, fsid, asok_file, subvol_path2,
+                fs_mirroring_utils,
+                cephfs_mirror_node[0],
+                source_clients[0],
+                source_fs,
+                fsid,
+                asok_file,
+                subvol_path2,
                 label="S2-failure",
             )
             asok_state = tri_fail["asok"].get("state", "")
@@ -457,9 +485,7 @@ def run(ceph_cluster, **kw):
                 f"umount -l {target_mount_fail}",
                 f"rm -rf {target_mount_fail}",
             ]:
-                target_clients[0].exec_command(
-                    sudo=True, cmd=cmd, check_ec=False
-                )
+                target_clients[0].exec_command(sudo=True, cmd=cmd, check_ec=False)
             time.sleep(10)
 
         log.info("Tri-interface on failure validated")
@@ -476,15 +502,18 @@ def run(ceph_cluster, **kw):
         )
         log.info(f"Status before snap lifecycle: {status_before}")
 
-        source_clients[0].exec_command(
-            sudo=True, cmd=f"touch {mount_path2}lc_file"
-        )
+        source_clients[0].exec_command(sudo=True, cmd=f"touch {mount_path2}lc_file")
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path2}.snap/snap_lc"
         )
         fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0], source_fs, "snap_lc",
-            fsid, asok_file, filesystem_id, peer_uuid,
+            cephfs_mirror_node[0],
+            source_fs,
+            "snap_lc",
+            fsid,
+            asok_file,
+            filesystem_id,
+            peer_uuid,
         )
 
         source_clients[0].exec_command(
@@ -529,36 +558,52 @@ def run(ceph_cluster, **kw):
         log.info("Scenario 4: Multiple directories isolation")
         log.info("=" * 60)
 
-        source_clients[0].exec_command(
-            sudo=True, cmd=f"touch {mount_path1}multi_1"
-        )
+        source_clients[0].exec_command(sudo=True, cmd=f"touch {mount_path1}multi_1")
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_multi_d1"
         )
-        source_clients[0].exec_command(
-            sudo=True, cmd=f"touch {mount_path3}multi_3"
-        )
+        source_clients[0].exec_command(sudo=True, cmd=f"touch {mount_path3}multi_3")
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path3}.snap/snap_multi_d3"
         )
 
         fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0], source_fs, "snap_multi_d1",
-            fsid, asok_file, filesystem_id, peer_uuid,
+            cephfs_mirror_node[0],
+            source_fs,
+            "snap_multi_d1",
+            fsid,
+            asok_file,
+            filesystem_id,
+            peer_uuid,
         )
         fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0], source_fs, "snap_multi_d3",
-            fsid, asok_file, filesystem_id, peer_uuid,
+            cephfs_mirror_node[0],
+            source_fs,
+            "snap_multi_d3",
+            fsid,
+            asok_file,
+            filesystem_id,
+            peer_uuid,
         )
 
         tri_d1 = collect_tri_interface(
-            fs_mirroring_utils, cephfs_mirror_node[0], source_clients[0],
-            source_fs, fsid, asok_file, subvol_path1,
+            fs_mirroring_utils,
+            cephfs_mirror_node[0],
+            source_clients[0],
+            source_fs,
+            fsid,
+            asok_file,
+            subvol_path1,
             label="S4-dir1",
         )
         tri_d3 = collect_tri_interface(
-            fs_mirroring_utils, cephfs_mirror_node[0], source_clients[0],
-            source_fs, fsid, asok_file, subvol_path3,
+            fs_mirroring_utils,
+            cephfs_mirror_node[0],
+            source_clients[0],
+            source_fs,
+            fsid,
+            asok_file,
+            subvol_path3,
             label="S4-dir3",
         )
 
@@ -598,15 +643,20 @@ def run(ceph_cluster, **kw):
 
             log.info("Delete the snapshots")
             all_snaps = [
-                "snap_tri_full", "snap_tri_delta",
-                "snap_conflict", "snap_lc", "snap_lc_renamed",
-                "snap_multi_d1", "snap_multi_d3",
+                "snap_tri_full",
+                "snap_tri_delta",
+                "snap_conflict",
+                "snap_lc",
+                "snap_lc_renamed",
+                "snap_multi_d1",
+                "snap_multi_d3",
             ]
             snap_mount_paths = [mount_path1, mount_path2, mount_path3]
             for spath in snap_mount_paths:
                 for snap in all_snaps:
                     source_clients[0].exec_command(
-                        sudo=True, cmd=f"rmdir {spath}.snap/{snap}",
+                        sudo=True,
+                        cmd=f"rmdir {spath}.snap/{snap}",
                         check_ec=False,
                     )
 
@@ -624,11 +674,13 @@ def run(ceph_cluster, **kw):
 
             log.info("Cleanup target client")
             target_clients[0].exec_command(
-                sudo=True, cmd="umount -l /mnt/tri_fail_target",
+                sudo=True,
+                cmd="umount -l /mnt/tri_fail_target",
                 check_ec=False,
             )
             target_clients[0].exec_command(
-                sudo=True, cmd="rm -rf /mnt/tri_fail_target",
+                sudo=True,
+                cmd="rm -rf /mnt/tri_fail_target",
                 check_ec=False,
             )
 
@@ -654,14 +706,18 @@ def run(ceph_cluster, **kw):
             log.info("Remove Subvolumes")
             for i in range(1, 4):
                 fs_util_ceph1.remove_subvolume(
-                    source_clients[0], source_fs,
-                    f"{subvol_name}_{i}", group_name=subvol_group_name,
+                    source_clients[0],
+                    source_fs,
+                    f"{subvol_name}_{i}",
+                    group_name=subvol_group_name,
                     check_ec=False,
                 )
 
             log.info("Remove Subvolume Group")
             fs_util_ceph1.remove_subvolumegroup(
-                source_clients[0], source_fs, subvol_group_name,
+                source_clients[0],
+                source_fs,
+                subvol_group_name,
                 check_ec=False,
             )
         except Exception as cleanup_err:

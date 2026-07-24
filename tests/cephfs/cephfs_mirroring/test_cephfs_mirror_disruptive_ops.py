@@ -13,8 +13,13 @@ log = Log(__name__)
 
 
 def wait_for_idle(
-    fs_mirroring_utils, cephfs_mirror_node, source_client, fs_name,
-    path, timeout=300, interval=15,
+    fs_mirroring_utils,
+    cephfs_mirror_node,
+    source_client,
+    fs_name,
+    path,
+    timeout=300,
+    interval=15,
 ):
     """Poll asok until path reaches idle state or timeout."""
     path_key = path.rstrip("/")
@@ -36,9 +41,7 @@ def wait_for_idle(
             log.warning(f"wait_for_idle poll error (will retry): {e}")
         time.sleep(interval)
         elapsed += interval
-    raise CommandFailed(
-        f"Path {path_key} did not reach idle within {timeout}s"
-    )
+    raise CommandFailed(f"Path {path_key} did not reach idle within {timeout}s")
 
 
 def run(ceph_cluster, **kw):
@@ -143,8 +146,12 @@ def run(ceph_cluster, **kw):
 
         log.info("Wait for baseline snap to sync")
         path_status = wait_for_idle(
-            fs_mirroring_utils, cephfs_mirror_node[0], source_clients[0],
-            source_fs, subvol_path, timeout=300,
+            fs_mirroring_utils,
+            cephfs_mirror_node[0],
+            source_clients[0],
+            source_fs,
+            subvol_path,
+            timeout=300,
         )
         log.info(f"Baseline synced: snaps_synced={path_status.get('snaps_synced')}")
 
@@ -288,7 +295,8 @@ def run(ceph_cluster, **kw):
             log.info("Delete the snapshots")
             for snap in ["snap_baseline", "snap_conflict_r8"]:
                 source_clients[0].exec_command(
-                    sudo=True, cmd=f"rmdir {mount_path}.snap/{snap}",
+                    sudo=True,
+                    cmd=f"rmdir {mount_path}.snap/{snap}",
                     check_ec=False,
                 )
 
@@ -304,11 +312,13 @@ def run(ceph_cluster, **kw):
 
             log.info("Cleanup target client")
             target_clients[0].exec_command(
-                sudo=True, cmd=f"umount -l {target_mount_path}",
+                sudo=True,
+                cmd=f"umount -l {target_mount_path}",
                 check_ec=False,
             )
             target_clients[0].exec_command(
-                sudo=True, cmd=f"rm -rf {target_mount_path}",
+                sudo=True,
+                cmd=f"rm -rf {target_mount_path}",
                 check_ec=False,
             )
 
@@ -332,14 +342,18 @@ def run(ceph_cluster, **kw):
 
             log.info("Remove Subvolumes")
             fs_util_ceph1.remove_subvolume(
-                source_clients[0], source_fs,
-                f"{subvol_name}_1", group_name=subvol_group_name,
+                source_clients[0],
+                source_fs,
+                f"{subvol_name}_1",
+                group_name=subvol_group_name,
                 check_ec=False,
             )
 
             log.info("Remove Subvolume Group")
             fs_util_ceph1.remove_subvolumegroup(
-                source_clients[0], source_fs, subvol_group_name,
+                source_clients[0],
+                source_fs,
+                subvol_group_name,
                 check_ec=False,
             )
         except Exception as cleanup_err:

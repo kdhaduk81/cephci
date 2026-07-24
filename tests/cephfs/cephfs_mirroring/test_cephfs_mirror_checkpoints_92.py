@@ -154,9 +154,7 @@ def run(ceph_cluster, **kw):
         log.info("Scenario 1: Checkpoint add, ls, remove lifecycle")
         log.info("=" * 60)
 
-        source_clients[0].exec_command(
-            sudo=True, cmd=f"touch {mount_path}file_ckpt1"
-        )
+        source_clients[0].exec_command(sudo=True, cmd=f"touch {mount_path}file_ckpt1")
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path}.snap/snap_lifecycle"
         )
@@ -200,9 +198,7 @@ def run(ceph_cluster, **kw):
         log.info("Scenario 2: Checkpoint now (latest snapshot)")
         log.info("=" * 60)
 
-        source_clients[0].exec_command(
-            sudo=True, cmd=f"touch {mount_path}file_now"
-        )
+        source_clients[0].exec_command(sudo=True, cmd=f"touch {mount_path}file_now")
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path}.snap/snap_now"
         )
@@ -217,7 +213,9 @@ def run(ceph_cluster, **kw):
         )
 
         try:
-            cmd = f"ceph fs snapshot mirror checkpoint add {source_fs} {subvol_path1} now"
+            cmd = (
+                f"ceph fs snapshot mirror checkpoint now {source_fs} {subvol_path1}"
+            )
             out, _ = source_clients[0].exec_command(sudo=True, cmd=cmd)
             log.info(f"Checkpoint now result: {out.strip()}")
 
@@ -252,7 +250,9 @@ def run(ceph_cluster, **kw):
                 if ps.get("state") == "idle" and last == "snap_after_now":
                     break
 
-            log.info("Re-check checkpoint — should still reference snap_now, not snap_after_now")
+            log.info(
+                "Re-check checkpoint — should still reference snap_now, not snap_after_now"
+            )
             ckpt_list_after = checkpoint_ls(source_clients[0], source_fs, subvol_path1)
             now_ckpt_after = None
             for ckpt in ckpt_list_after:
@@ -266,7 +266,8 @@ def run(ceph_cluster, **kw):
                 log.warning("Checkpoint for snap_now not found after new snap created")
 
             source_clients[0].exec_command(
-                sudo=True, cmd=f"rmdir {mount_path}.snap/snap_after_now",
+                sudo=True,
+                cmd=f"rmdir {mount_path}.snap/snap_after_now",
                 check_ec=False,
             )
         except CommandFailed as e:
@@ -281,26 +282,37 @@ def run(ceph_cluster, **kw):
         log.info("Scenario 3: State transition CREATED → COMPLETE")
         log.info("=" * 60)
 
+        log.info("S3: Write 500 MiB to ensure sync takes time")
         source_clients[0].exec_command(
             sudo=True,
-            cmd=f"dd if=/dev/urandom of={mount_path}state_data bs=1M count=10",
+            cmd=f"dd if=/dev/urandom of={mount_path}state_data bs=1M count=500",
         )
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path}.snap/snap_state"
         )
 
-        try:
-            checkpoint_add(
-                source_clients[0], source_fs, subvol_path1, "snap_state"
-            )
-            ckpt_list = checkpoint_ls(source_clients[0], source_fs, subvol_path1)
-            for ckpt in ckpt_list:
-                if ckpt.get("snap_name") == "snap_state":
-                    ckpt_status = ckpt.get("status", ckpt.get("state", ""))
-                    log.info(f"Checkpoint status before sync: {ckpt_status}")
-        except CommandFailed as e:
-            log.warning(f"Checkpoint state transition check: {e}")
+        log.info("S3: Add checkpoint immediately (before sync completes)")
+        checkpoint_add(source_clients[0], source_fs, subvol_path1, "snap_state")
 
+        ckpt_list = checkpoint_ls(source_clients[0], source_fs, subvol_path1)
+        log.info(f"S3: checkpoint ls immediately after add: {ckpt_list}")
+        initial_status = None
+        for ckpt in ckpt_list:
+            if ckpt.get("snap_name") == "snap_state":
+                initial_status = ckpt.get("status", ckpt.get("state", ""))
+                log.info(f"S3: Initial checkpoint status: {initial_status}")
+
+        if initial_status and "created" in initial_status.lower():
+            log.info("S3: Captured CREATED state before sync completes")
+        elif initial_status and "complete" in initial_status.lower():
+            log.warning(
+                "S3: Status already COMPLETE — 500 MiB synced too fast "
+                "to observe CREATED state"
+            )
+        else:
+            log.info(f"S3: Initial status: {initial_status}")
+
+        log.info("S3: Wait for snap_state to sync")
         fs_mirroring_utils.validate_snapshot_sync_status(
             cephfs_mirror_node[0],
             source_fs,
@@ -311,18 +323,21 @@ def run(ceph_cluster, **kw):
             peer_uuid,
         )
 
-        try:
-            ckpt_list = checkpoint_ls(source_clients[0], source_fs, subvol_path1)
-            for ckpt in ckpt_list:
-                if ckpt.get("snap_name") == "snap_state":
-                    ckpt_status = ckpt.get("status", ckpt.get("state", ""))
-                    log.info(f"Checkpoint status after sync: {ckpt_status}")
-                    if "complete" in ckpt_status.lower():
-                        log.info("State transition CREATED → COMPLETE validated")
-        except CommandFailed as e:
-            log.warning(f"Checkpoint state check after sync: {e}")
+        ckpt_list_after = checkpoint_ls(source_clients[0], source_fs, subvol_path1)
+        log.info(f"S3: checkpoint ls after sync: {ckpt_list_after}")
+        final_status = None
+        for ckpt in ckpt_list_after:
+            if ckpt.get("snap_name") == "snap_state":
+                final_status = ckpt.get("status", ckpt.get("state", ""))
+                log.info(f"S3: Final checkpoint status: {final_status}")
 
-        log.info("State transition scenario completed")
+        if final_status and "complete" in final_status.lower():
+            log.info("S3 PASSED: Checkpoint reached COMPLETE after sync")
+        else:
+            raise CommandFailed(
+                f"S3 FAILED: Expected status 'complete' after sync, "
+                f"got '{final_status}'"
+            )
 
         # ============================================================
         # Scenario 4: Immediate COMPLETE for already-synced snapshot
@@ -332,25 +347,30 @@ def run(ceph_cluster, **kw):
         log.info("=" * 60)
 
         try:
-            checkpoint_add(
-                source_clients[0], source_fs, subvol_path1, "snap_lifecycle"
-            )
+            checkpoint_add(source_clients[0], source_fs, subvol_path1, "snap_lifecycle")
             ckpt_list = checkpoint_ls(source_clients[0], source_fs, subvol_path1)
+            log.info(f"S4: checkpoint ls after adding already-synced snap: {ckpt_list}")
+            found = False
             for ckpt in ckpt_list:
                 if ckpt.get("snap_name") == "snap_lifecycle":
+                    found = True
                     ckpt_status = ckpt.get("status", ckpt.get("state", ""))
-                    log.info(
-                        f"Checkpoint on already-synced snap: status={ckpt_status}"
-                    )
-                    if "complete" in ckpt_status.lower():
-                        log.info("Immediate COMPLETE validated")
-            checkpoint_rm(
-                source_clients[0], source_fs, subvol_path1, "snap_lifecycle"
-            )
+                    log.info(f"S4: Checkpoint on already-synced snap: status={ckpt_status}")
+                    if "complete" not in ckpt_status.lower():
+                        raise CommandFailed(
+                            f"S4 FAILED: Expected status 'complete' for "
+                            f"already-synced snap, got '{ckpt_status}'"
+                        )
+                    log.info("S4 PASSED: Immediate COMPLETE validated")
+            if not found:
+                raise CommandFailed(
+                    "S4 FAILED: snap_lifecycle not found in checkpoint ls"
+                )
+            checkpoint_rm(source_clients[0], source_fs, subvol_path1, "snap_lifecycle")
         except CommandFailed as e:
-            log.warning(f"Immediate COMPLETE check: {e}")
-
-        log.info("Immediate COMPLETE scenario completed")
+            if "S4 FAILED" in str(e):
+                raise
+            log.warning(f"S4: Checkpoint command error: {e}")
 
         # ============================================================
         # Scenario 5: Multiple checkpoints + ordering
@@ -369,16 +389,21 @@ def run(ceph_cluster, **kw):
         multi_snaps = []
         for i in range(3):
             snap_name = f"snap_multi_{i}"
+            log.info(f"S5: Write 200 MiB data for {snap_name}")
             source_clients[0].exec_command(
-                sudo=True, cmd=f"touch {mount_path}multi_file_{i}"
+                sudo=True,
+                cmd=f"dd if=/dev/urandom of={mount_path}multi_data_{i} "
+                f"bs=1M count=200 2>/dev/null",
             )
             source_clients[0].exec_command(
                 sudo=True, cmd=f"mkdir {mount_path}.snap/{snap_name}"
             )
+            checkpoint_add(source_clients[0], source_fs, subvol_path1, snap_name)
+            log.info(f"S5: Created {snap_name} and added checkpoint")
             multi_snaps.append(snap_name)
 
-        log.info("Wait for all 3 multi snaps to sync (poll for idle)")
-        for attempt in range(20):
+        log.info("S5: Wait for all 3 multi snaps to sync (poll for idle)")
+        for attempt in range(40):
             time.sleep(15)
             peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
                 cephfs_mirror_node[0], source_clients[0], source_fs
@@ -395,38 +420,67 @@ def run(ceph_cluster, **kw):
                 break
         else:
             raise CommandFailed(
-                f"Scenario 5: Expected snaps_synced >= {snaps_synced_before + 3}, "
+                f"S5: Expected snaps_synced >= {snaps_synced_before + 3}, "
                 f"got {snaps_now}"
             )
-        log.info(f"Scenario 5: All 3 snaps synced, snaps_synced={snaps_now}")
-
-        for snap_name in multi_snaps:
-            try:
-                checkpoint_add(
-                    source_clients[0], source_fs, subvol_path1, snap_name
-                )
-            except CommandFailed as e:
-                log.warning(f"checkpoint add for {snap_name}: {e}")
+        log.info(f"S5: All 3 snaps synced, snaps_synced={snaps_now}")
 
         ckpt_list = checkpoint_ls(source_clients[0], source_fs, subvol_path1)
-        log.info(f"Multiple checkpoints ({len(ckpt_list)} total): {ckpt_list}")
+        log.info(f"S5: checkpoint ls ({len(ckpt_list)} entries): {ckpt_list}")
 
-        ckpt_names = [c.get("snap_name", "") for c in ckpt_list]
+        ckpt_map = {c.get("snap_name"): c for c in ckpt_list}
         for snap_name in multi_snaps:
-            if snap_name in ckpt_names:
-                log.info(f"Checkpoint {snap_name} found in list")
-            else:
-                log.warning(f"Checkpoint {snap_name} NOT found in list")
-
-        for snap_name in multi_snaps:
-            try:
-                checkpoint_rm(
-                    source_clients[0], source_fs, subvol_path1, snap_name
+            if snap_name not in ckpt_map:
+                raise CommandFailed(
+                    f"S5 FAILED: Checkpoint {snap_name} not found in ls"
                 )
-            except CommandFailed:
-                pass
+            ckpt = ckpt_map[snap_name]
+            ckpt_status = ckpt.get("status", ckpt.get("state", ""))
+            if "complete" not in ckpt_status.lower():
+                raise CommandFailed(
+                    f"S5 FAILED: {snap_name} status='{ckpt_status}', "
+                    f"expected 'complete'"
+                )
+            log.info(
+                f"S5: {snap_name} — status={ckpt_status}, "
+                f"snap_id={ckpt.get('snap_id')}, "
+                f"created_at={ckpt.get('created_at')}, "
+                f"updated_at={ckpt.get('updated_at')}"
+            )
 
-        log.info("Multiple checkpoints + ordering validated")
+        multi_ids = [ckpt_map[s].get("snap_id", 0) for s in multi_snaps]
+        if multi_ids != sorted(multi_ids):
+            raise CommandFailed(
+                f"S5 FAILED: snap_id not in ascending order: {multi_ids}"
+            )
+        log.info(f"S5: snap_id ordering correct: {multi_ids}")
+
+        created_times = [ckpt_map[s].get("created_at", "") for s in multi_snaps]
+        if created_times != sorted(created_times):
+            raise CommandFailed(
+                f"S5 FAILED: created_at not in ascending order: {created_times}"
+            )
+        log.info(f"S5: created_at ordering correct: {created_times}")
+
+        updated_times = [ckpt_map[s].get("updated_at", "") for s in multi_snaps]
+        if updated_times != sorted(updated_times):
+            raise CommandFailed(
+                f"S5 FAILED: updated_at not in ascending order: {updated_times}"
+            )
+        log.info(f"S5: updated_at ordering correct: {updated_times}")
+
+        for snap_name in multi_snaps:
+            checkpoint_rm(source_clients[0], source_fs, subvol_path1, snap_name)
+
+        ckpt_list_after = checkpoint_ls(source_clients[0], source_fs, subvol_path1)
+        remaining = [c.get("snap_name") for c in ckpt_list_after]
+        for snap_name in multi_snaps:
+            if snap_name in remaining:
+                raise CommandFailed(
+                    f"S5 FAILED: {snap_name} still present after remove"
+                )
+
+        log.info("S5 PASSED: Multiple checkpoints — all complete, ordered, removed")
 
         # ============================================================
         # Scenario 6: Checkpoint on older snapshot with snap schedule
@@ -474,12 +528,10 @@ def run(ceph_cluster, **kw):
             log.info("Run checkpoint now (pins to latest snapshot)")
             try:
                 cmd_now = (
-                    f"ceph fs snapshot mirror checkpoint add "
-                    f"{source_fs} {subvol_path1} now"
+                    f"ceph fs snapshot mirror checkpoint now "
+                    f"{source_fs} {subvol_path1}"
                 )
-                out_now, _ = source_clients[0].exec_command(
-                    sudo=True, cmd=cmd_now
-                )
+                out_now, _ = source_clients[0].exec_command(sudo=True, cmd=cmd_now)
                 log.info(f"checkpoint now result: {out_now.strip()}")
             except CommandFailed as e:
                 log.warning(f"checkpoint now failed: {e}")
@@ -498,13 +550,9 @@ def run(ceph_cluster, **kw):
                     ),
                     check_ec=False,
                 )
-                log.info(
-                    f"checkpoint add for older snap {oldest_snap} returned"
-                )
+                log.info(f"checkpoint add for older snap {oldest_snap} returned")
             except Exception as e:
-                log.warning(
-                    f"checkpoint add for older snap timed out or failed: {e}"
-                )
+                log.warning(f"checkpoint add for older snap timed out or failed: {e}")
                 older_ckpt_hung = True
 
             log.info("Verify checkpoint ls is responsive (60s timeout)")
@@ -552,18 +600,23 @@ def run(ceph_cluster, **kw):
 
         log.info("Deactivate and remove snap schedule")
         snap_util.deactivate_snap_schedule(
-            source_clients[0], sched_path,
-            sched_val="1m", fs_name=source_fs,
+            source_clients[0],
+            sched_path,
+            sched_val="1m",
+            fs_name=source_fs,
         )
         snap_util.remove_snap_schedule(
-            source_clients[0], sched_path, fs_name=source_fs,
+            source_clients[0],
+            sched_path,
+            fs_name=source_fs,
         )
         time.sleep(10)
 
         log.info("Remove scheduled snapshots")
         for snap in sched_snaps:
             source_clients[0].exec_command(
-                sudo=True, cmd=f"rmdir {mount_path}.snap/{snap}",
+                sudo=True,
+                cmd=f"rmdir {mount_path}.snap/{snap}",
                 check_ec=False,
             )
 
@@ -580,12 +633,16 @@ def run(ceph_cluster, **kw):
         try:
             log.info("Cleanup: Deactivate and remove snap schedule")
             snap_util.deactivate_snap_schedule(
-                source_clients[0], subvol_path1,
-                sched_val="1m", fs_name=source_fs,
+                source_clients[0],
+                subvol_path1,
+                sched_val="1m",
+                fs_name=source_fs,
             )
             snap_util.remove_snap_schedule(
-                source_clients[0], subvol_path1,
-                fs_name=source_fs, check_ec=False,
+                source_clients[0],
+                subvol_path1,
+                fs_name=source_fs,
+                check_ec=False,
             )
 
             log.info("Cleanup: Remove all scheduled snapshots")
@@ -606,13 +663,16 @@ def run(ceph_cluster, **kw):
                 pass
 
             log.info("Delete the snapshots")
-            all_snaps = (
-                ["snap_lifecycle", "snap_now", "snap_after_now", "snap_state"]
-                + [f"snap_multi_{i}" for i in range(3)]
-            )
+            all_snaps = [
+                "snap_lifecycle",
+                "snap_now",
+                "snap_after_now",
+                "snap_state",
+            ] + [f"snap_multi_{i}" for i in range(3)]
             for snap in all_snaps:
                 source_clients[0].exec_command(
-                    sudo=True, cmd=f"rmdir {mount_path}.snap/{snap}",
+                    sudo=True,
+                    cmd=f"rmdir {mount_path}.snap/{snap}",
                     check_ec=False,
                 )
 
@@ -646,14 +706,18 @@ def run(ceph_cluster, **kw):
 
             log.info("Remove Subvolumes")
             fs_util_ceph1.remove_subvolume(
-                source_clients[0], source_fs,
-                f"{subvol_name}_1", group_name=subvol_group_name,
+                source_clients[0],
+                source_fs,
+                f"{subvol_name}_1",
+                group_name=subvol_group_name,
                 check_ec=False,
             )
 
             log.info("Remove Subvolume Group")
             fs_util_ceph1.remove_subvolumegroup(
-                source_clients[0], source_fs, subvol_group_name,
+                source_clients[0],
+                source_fs,
+                subvol_group_name,
                 check_ec=False,
             )
         except Exception as cleanup_err:

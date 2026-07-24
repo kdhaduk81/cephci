@@ -15,7 +15,8 @@ log = Log(__name__)
 def ensure_prometheus_enabled(client):
     """Enable the Prometheus MGR module if the service endpoint is not found."""
     svc_out, _ = client.exec_command(
-        sudo=True, cmd="ceph mgr services -f json",
+        sudo=True,
+        cmd="ceph mgr services -f json",
     )
     mgr_services = json.loads(svc_out)
     prom_url = mgr_services.get("prometheus", "").rstrip("/")
@@ -25,11 +26,14 @@ def ensure_prometheus_enabled(client):
 
     log.info("Prometheus service not found, enabling mgr prometheus module")
     client.exec_command(
-        sudo=True, cmd="ceph mgr module enable prometheus", check_ec=False,
+        sudo=True,
+        cmd="ceph mgr module enable prometheus",
+        check_ec=False,
     )
     time.sleep(10)
     svc_out, _ = client.exec_command(
-        sudo=True, cmd="ceph mgr services -f json",
+        sudo=True,
+        cmd="ceph mgr services -f json",
     )
     mgr_services = json.loads(svc_out)
     prom_url = mgr_services.get("prometheus", "").rstrip("/")
@@ -188,23 +192,41 @@ def run(ceph_cluster, **kw):
             )
 
         expected_labels = {
-            "source_fscid", "source_filesystem", "peer_uuid",
-            "peer_cluster_name", "peer_cluster_filesystem", "directory",
+            "source_fscid",
+            "source_filesystem",
+            "peer_uuid",
+            "peer_cluster_name",
+            "peer_cluster_filesystem",
+            "directory",
         }
         expected_counters = {
-            "dir_state", "current_sync_bytes", "current_total_bytes",
-            "current_sync_files", "current_total_files",
-            "current_sync_bytes_percent", "current_sync_files_percent",
-            "current_sync_mode", "current_snap_id",
-            "current_read_bps", "current_write_bps",
-            "crawl_state", "crawl_duration_seconds",
+            "dir_state",
+            "current_sync_bytes",
+            "current_total_bytes",
+            "current_sync_files",
+            "current_total_files",
+            "current_sync_bytes_percent",
+            "current_sync_files_percent",
+            "current_sync_mode",
+            "current_snap_id",
+            "current_read_bps",
+            "current_write_bps",
+            "crawl_state",
+            "crawl_duration_seconds",
             "last_crawl_duration_seconds",
-            "datasync_wait_state", "datasync_wait_duration_seconds",
+            "datasync_wait_state",
+            "datasync_wait_duration_seconds",
             "last_datasync_wait_duration_seconds",
-            "current_eta_valid", "current_eta_seconds",
-            "snaps_synced", "snaps_deleted", "snaps_renamed",
-            "last_snap_id", "last_sync_duration_seconds",
-            "last_sync_timestamp", "last_sync_bytes", "last_sync_files",
+            "current_eta_valid",
+            "current_eta_seconds",
+            "snaps_synced",
+            "snaps_deleted",
+            "snaps_renamed",
+            "last_snap_id",
+            "last_sync_duration_seconds",
+            "last_sync_timestamp",
+            "last_sync_bytes",
+            "last_sync_files",
         }
 
         for idx, entry in enumerate(dir_entries):
@@ -215,9 +237,7 @@ def run(ceph_cluster, **kw):
 
             missing_labels = expected_labels - set(labels.keys())
             if missing_labels:
-                raise CommandFailed(
-                    f"Entry {idx}: missing labels: {missing_labels}"
-                )
+                raise CommandFailed(f"Entry {idx}: missing labels: {missing_labels}")
             log.info(f"Entry {idx}: all {len(expected_labels)} labels present")
 
             if labels.get("source_filesystem") != source_fs:
@@ -238,13 +258,9 @@ def run(ceph_cluster, **kw):
 
             missing_counters = expected_counters - set(counters.keys())
             if missing_counters:
-                log.warning(
-                    f"Entry {idx}: missing counters: {missing_counters}"
-                )
+                log.warning(f"Entry {idx}: missing counters: {missing_counters}")
             else:
-                log.info(
-                    f"Entry {idx}: all {len(expected_counters)} counters present"
-                )
+                log.info(f"Entry {idx}: all {len(expected_counters)} counters present")
 
             extra_counters = set(counters.keys()) - expected_counters
             if extra_counters:
@@ -283,13 +299,9 @@ def run(ceph_cluster, **kw):
                     for line in prom_out.strip().split("\n")[:10]:
                         log.info(f"  {line}")
                     if not help_found:
-                        log.warning(
-                            "HELP line not found for cephfs_mirror_directory"
-                        )
+                        log.warning("HELP line not found for cephfs_mirror_directory")
                     if not type_found:
-                        log.warning(
-                            "TYPE line not found for cephfs_mirror_directory"
-                        )
+                        log.warning("TYPE line not found for cephfs_mirror_directory")
                 else:
                     log.warning(
                         "cephfs_mirror_directory not found in Prometheus scrape"
@@ -345,7 +357,8 @@ def run(ceph_cluster, **kw):
             log.info("Counter entry removed for deleted directory")
 
         source_clients[0].exec_command(
-            sudo=True, cmd=f"rm -rf {kernel_mounting_dir}{lifecycle_dir}",
+            sudo=True,
+            cmd=f"rm -rf {kernel_mounting_dir}{lifecycle_dir}",
             check_ec=False,
         )
         log.info("Counter lifecycle validated")
@@ -360,13 +373,10 @@ def run(ceph_cluster, **kw):
         log.info("Set tick interval to 1s for frequent counter updates")
         source_clients[0].exec_command(
             sudo=True,
-            cmd="ceph config set client.cephfs-mirror "
-            "cephfs_mirror_tick_interval 1",
+            cmd="ceph config set client.cephfs-mirror " "cephfs_mirror_tick_interval 1",
         )
         log.info("Restart cephfs-mirror daemon for tick_interval to take effect")
-        source_clients[0].exec_command(
-            sudo=True, cmd="ceph orch restart cephfs-mirror"
-        )
+        source_clients[0].exec_command(sudo=True, cmd="ceph orch restart cephfs-mirror")
         time.sleep(30)
         daemon_name = fs_mirroring_utils.get_daemon_name(source_clients[0])
         asok_file = fs_mirroring_utils.get_asok_file(
@@ -541,9 +551,7 @@ def run(ceph_cluster, **kw):
                     for line in prom_out.strip().split("\n")[:10]:
                         log.info(f"  {line}")
                 else:
-                    log.info(
-                        "Prometheus cephfs_mirror metrics not found in scrape"
-                    )
+                    log.info("Prometheus cephfs_mirror metrics not found in scrape")
         except Exception as e:
             log.warning(f"Prometheus scrape check: {e}")
 
@@ -619,7 +627,8 @@ def run(ceph_cluster, **kw):
             for spath in snap_mount_paths:
                 for snap in all_snaps:
                     source_clients[0].exec_command(
-                        sudo=True, cmd=f"rmdir {spath}.snap/{snap}",
+                        sudo=True,
+                        cmd=f"rmdir {spath}.snap/{snap}",
                         check_ec=False,
                     )
 
@@ -662,14 +671,18 @@ def run(ceph_cluster, **kw):
             log.info("Remove Subvolumes")
             for i in range(1, 3):
                 fs_util_ceph1.remove_subvolume(
-                    source_clients[0], source_fs,
-                    f"{subvol_name}_{i}", group_name=subvol_group_name,
+                    source_clients[0],
+                    source_fs,
+                    f"{subvol_name}_{i}",
+                    group_name=subvol_group_name,
                     check_ec=False,
                 )
 
             log.info("Remove Subvolume Group")
             fs_util_ceph1.remove_subvolumegroup(
-                source_clients[0], source_fs, subvol_group_name,
+                source_clients[0],
+                source_fs,
+                subvol_group_name,
                 check_ec=False,
             )
         except Exception as cleanup_err:
