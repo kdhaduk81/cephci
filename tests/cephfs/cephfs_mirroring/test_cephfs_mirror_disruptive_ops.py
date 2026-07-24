@@ -253,7 +253,11 @@ def run(ceph_cluster, **kw):
         if recovered:
             log.info(f"R8: Recovered to '{state}' after removing conflict")
         else:
-            log.warning(f"R8: State after recovery is '{state}', may need more time")
+            log.error(
+                f"R8: State after recovery is '{state}'. "
+                "PRODUCT BUG: cephfs-mirror daemon does not auto-recover "
+                "from failed state after the conflicting snapshot is removed."
+            )
 
         log.info("R8: Verify recovery via MGR interface")
         mgr_status = fs_mirroring_utils.get_mgr_mirror_status(
@@ -268,6 +272,13 @@ def run(ceph_cluster, **kw):
                     f"R8 MGR post-recovery: state={mgr_peer[0].get('state')}, "
                     f"snaps_synced={mgr_peer[0].get('snaps_synced')}"
                 )
+
+        if not recovered:
+            raise CommandFailed(
+                "PRODUCT BUG: cephfs-mirror daemon stuck in 'failed' state "
+                "after sync failure. Daemon does not auto-recover even after "
+                "conflicting snapshot is removed and daemon is restarted."
+            )
 
         log.info("=" * 60)
         log.info("R8 PASSED: Sync failure did not corrupt metrics")
