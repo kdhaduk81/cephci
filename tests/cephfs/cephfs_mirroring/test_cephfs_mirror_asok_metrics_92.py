@@ -19,13 +19,12 @@ def run(ceph_cluster, **kw):
     Consolidated scenarios:
      1. Schema verification (field presence)
      2. Full sync — sync-mode, ETA, crawl, datasync, throughput (500 MiB)
-     3. Delta sync — sync-mode, monotonicity, snapdiff/blockdiff
+     3. Delta sync — sync-mode, monotonicity, snapdiff/blockdiff (500 MiB)
      4. last_synced_snap enrichment (assert non-zero values)
      5. Sync-mode fallback when snapdiff ref missing
 
-    Note: Zero-file directory sync validated in test_cephfs_mirror_improved_stats (R12).
-
     Note: Scenario 8 (sync failure) in test_cephfs_mirror_disruptive_ops.py
+    Note: Zero-file directory sync validated in test_cephfs_mirror_improved_stats (R12).
 
     Returns 0 on success, 1 on failure.
     """
@@ -118,10 +117,13 @@ def run(ceph_cluster, **kw):
         log.info("Set tick interval to 1s for accurate sync metrics")
         source_clients[0].exec_command(
             sudo=True,
-            cmd="ceph config set client.cephfs-mirror " "cephfs_mirror_tick_interval 1",
+            cmd="ceph config set client.cephfs-mirror "
+            "cephfs_mirror_tick_interval 1",
         )
         log.info("Restart cephfs-mirror daemon for tick_interval to take effect")
-        source_clients[0].exec_command(sudo=True, cmd="ceph orch restart cephfs-mirror")
+        source_clients[0].exec_command(
+            sudo=True, cmd="ceph orch restart cephfs-mirror"
+        )
         time.sleep(30)
 
         fsid = fs_mirroring_utils.get_fsid(cephfs_mirror_node[0])
@@ -191,9 +193,7 @@ def run(ceph_cluster, **kw):
                 status = fs_mirroring_utils.get_asok_peer_status_raw(
                     cephfs_mirror_node[0], source_clients[0], source_fs
                 )
-                log.info(
-                    f"[S2 Poll {poll_i}] Raw asok: {json.dumps(status.get(path1_key, {}))}"
-                )
+                log.info(f"[S2 Poll {poll_i}] Raw asok: {json.dumps(status.get(path1_key, {}))}")
 
                 dir_data = status.get(path1_key, {})
                 state = dir_data.get("state", "")
@@ -242,21 +242,14 @@ def run(ceph_cluster, **kw):
                 log.warning(f"S2 poll error: {e}")
 
         fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0],
-            source_fs,
-            "snap_full",
-            fsid,
-            asok_file,
-            filesystem_id,
-            peer_uuid,
+            cephfs_mirror_node[0], source_fs, "snap_full",
+            fsid, asok_file, filesystem_id, peer_uuid,
         )
 
-        log.info(
-            f"S2 Results: sync_mode_full={sync_mode_full}, "
-            f"eta_observed={eta_observed}, crawl_observed={crawl_observed}, "
-            f"datasync_observed={datasync_observed}, "
-            f"throughput_observed={throughput_observed}"
-        )
+        log.info(f"S2 Results: sync_mode_full={sync_mode_full}, "
+                 f"eta_observed={eta_observed}, crawl_observed={crawl_observed}, "
+                 f"datasync_observed={datasync_observed}, "
+                 f"throughput_observed={throughput_observed}")
 
         if not sync_mode_full:
             log.warning("S2: sync-mode=full was NOT captured during polling")
@@ -291,13 +284,8 @@ def run(ceph_cluster, **kw):
 
         log.info("Wait for snap_base to sync")
         fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0],
-            source_fs,
-            "snap_base",
-            fsid,
-            asok_file,
-            filesystem_id,
-            peer_uuid,
+            cephfs_mirror_node[0], source_fs, "snap_base",
+            fsid, asok_file, filesystem_id, peer_uuid,
         )
 
         log.info("Modify 5 of 10 small files + partial write to large file")
@@ -386,13 +374,8 @@ def run(ceph_cluster, **kw):
                 log.warning(f"S3 poll error: {e}")
 
         fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0],
-            source_fs,
-            "snap_delta",
-            fsid,
-            asok_file,
-            filesystem_id,
-            peer_uuid,
+            cephfs_mirror_node[0], source_fs, "snap_delta",
+            fsid, asok_file, filesystem_id, peer_uuid,
         )
 
         log.info(
@@ -424,12 +407,8 @@ def run(ceph_cluster, **kw):
             raise CommandFailed("S4 FAILED: last_synced_snap.name missing")
 
         enrichment_fields = [
-            "id",
-            "name",
-            "sync_duration",
-            "sync_time_stamp",
-            "sync_bytes",
-            "sync_files",
+            "id", "name", "sync_duration", "sync_time_stamp",
+            "sync_bytes", "sync_files",
         ]
         for field in enrichment_fields:
             val = path1_last.get(field)
@@ -453,7 +432,6 @@ def run(ceph_cluster, **kw):
                 f"sync_files={sync_files}, sync_duration={sync_duration}"
             )
 
-        snapdiff_total = 74 * 1024 * 1024
         if path1_last.get("name") == "snap_delta" and sync_files > 0:
             if sync_files <= 26:
                 log.info(
@@ -472,25 +450,21 @@ def run(ceph_cluster, **kw):
         log.info("Scenario 5: Full sync fallback when snapdiff ref missing")
         log.info("=" * 60)
 
-        source_clients[0].exec_command(sudo=True, cmd=f"touch {mount_path1}ref_file")
+        source_clients[0].exec_command(
+            sudo=True, cmd=f"touch {mount_path1}ref_file"
+        )
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_ref1"
         )
         fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0],
-            source_fs,
-            "snap_ref1",
-            fsid,
-            asok_file,
-            filesystem_id,
-            peer_uuid,
+            cephfs_mirror_node[0], source_fs, "snap_ref1",
+            fsid, asok_file, filesystem_id, peer_uuid,
         )
 
         log.info("Delete prior snapshots to remove snapdiff reference")
         for snap in ["snap_full", "snap_base", "snap_delta", "snap_ref1"]:
             source_clients[0].exec_command(
-                sudo=True,
-                cmd=f"rmdir {mount_path1}.snap/{snap}",
+                sudo=True, cmd=f"rmdir {mount_path1}.snap/{snap}",
                 check_ec=False,
             )
         time.sleep(10)
@@ -532,13 +506,8 @@ def run(ceph_cluster, **kw):
                 log.warning(f"S5 poll error: {e}")
 
         fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0],
-            source_fs,
-            "snap_ref2",
-            fsid,
-            asok_file,
-            filesystem_id,
-            peer_uuid,
+            cephfs_mirror_node[0], source_fs, "snap_ref2",
+            fsid, asok_file, filesystem_id, peer_uuid,
         )
 
         if ref_mode == "full":
@@ -587,19 +556,15 @@ def run(ceph_cluster, **kw):
             )
 
             all_snaps = [
-                "snap_full",
-                "snap_base",
-                "snap_delta",
-                "snap_ref1",
-                "snap_ref2",
+                "snap_full", "snap_base", "snap_delta",
+                "snap_ref1", "snap_ref2",
             ]
             snap_mount_paths = [mount_path1, mount_path2]
             log.info("Delete the snapshots")
             for spath in snap_mount_paths:
                 for snap in all_snaps:
                     source_clients[0].exec_command(
-                        sudo=True,
-                        cmd=f"rmdir {spath}.snap/{snap}",
+                        sudo=True, cmd=f"rmdir {spath}.snap/{snap}",
                         check_ec=False,
                     )
 
@@ -638,18 +603,14 @@ def run(ceph_cluster, **kw):
             log.info("Remove Subvolumes")
             for sv in subvol_details:
                 fs_util_ceph1.remove_subvolume(
-                    source_clients[0],
-                    source_fs,
-                    sv["subvol_name"],
-                    group_name=subvol_group_name,
+                    source_clients[0], source_fs,
+                    sv["subvol_name"], group_name=subvol_group_name,
                     check_ec=False,
                 )
 
             log.info("Remove Subvolume Group")
             fs_util_ceph1.remove_subvolumegroup(
-                source_clients[0],
-                source_fs,
-                subvol_group_name,
+                source_clients[0], source_fs, subvol_group_name,
                 check_ec=False,
             )
         except Exception as cleanup_err:
