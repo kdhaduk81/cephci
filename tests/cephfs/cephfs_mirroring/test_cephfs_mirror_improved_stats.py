@@ -350,11 +350,14 @@ def run(ceph_cluster, **kw):
         log.info("R2: Sync-mode validation (full vs delta)")
         log.info("=" * 60)
 
-        log.info("Modify some files for delta sync")
+        snaps_before_r2 = path1_status.get("snaps_synced", 0)
+        log.info(f"R2: snaps_synced before delta snap = {snaps_before_r2}")
+
+        log.info("Write NEW unique files (delta_*) to ensure real data transfer")
         source_clients[0].exec_command(
             sudo=True,
-            cmd=f"for i in $(seq 1 10); do dd if=/dev/urandom of={mount_path1}file_$i "
-            f"bs=1M count=1 conv=notrunc 2>/dev/null; done",
+            cmd=f"for i in $(seq 1 20); do dd if=/dev/urandom "
+            f"of={mount_path1}delta_$i bs=1M count=5 2>/dev/null; done",
         )
 
         log.info("Create snap2 on dir1 (should trigger delta sync)")
@@ -364,8 +367,8 @@ def run(ceph_cluster, **kw):
 
         log.info("Poll for sync-mode during snap2 sync")
         sync_mode_found = None
-        for attempt in range(20):
-            time.sleep(10)
+        for attempt in range(30):
+            time.sleep(5)
             peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
                 cephfs_mirror_node[0], source_clients[0], source_fs
             )
@@ -374,33 +377,70 @@ def run(ceph_cluster, **kw):
             current_snap = path1_status.get("current_syncing_snap", {})
             log.info(
                 f"[R2 Poll {attempt}] state={state}, "
-                f"sync-mode={current_snap.get('sync-mode')}, snap={current_snap.get('name')}"
+                f"sync-mode={current_snap.get('sync-mode')}, "
+                f"snap={current_snap.get('name')}, "
+                f"sync_bytes={current_snap.get('bytes', {}).get('sync_bytes') if current_snap else None}, "
+                f"sync_files={current_snap.get('files', {}).get('sync_files') if current_snap else None}"
             )
             if current_snap.get("sync-mode"):
                 sync_mode_found = current_snap.get("sync-mode")
+                log.info(f"R2: Captured sync-mode='{sync_mode_found}' during active sync")
                 break
             if state == "idle":
-                log.info("R2: Sync completed before capturing sync-mode from current_syncing_snap")
-                break
+                last_snap = path1_status.get("last_synced_snap", {})
+                if last_snap.get("name") == "snap2":
+                    log.info("R2: snap2 synced before sync-mode could be captured")
+                    break
 
         if sync_mode_found == "delta":
             log.info("R2 PASSED: Second snapshot sync-mode is 'delta'")
         elif sync_mode_found == "full":
-            log.info("R2: sync-mode is 'full' (snapdiff ref may not be available)")
+            log.warning("R2: sync-mode is 'full' instead of 'delta'")
         else:
-            log.info("R2: Sync completed too fast to capture sync-mode")
+            log.warning("R2: Sync completed too fast to capture sync-mode")
 
-        log.info("Wait for snap2 sync to complete (poll)")
+        log.info("Wait for snap2 sync to complete")
         path1_status = wait_for_idle(
             fs_mirroring_utils, cephfs_mirror_node[0], source_clients[0],
             source_fs, subvolume_paths[0], timeout=300,
         )
 
-        if path1_status.get("snaps_synced", 0) < 2:
+        last_snap = path1_status.get("last_synced_snap", {})
+        log.info(
+            f"R2: last_synced_snap after delta: name={last_snap.get('name')}, "
+            f"sync_bytes={last_snap.get('sync_bytes')}, "
+            f"sync_files={last_snap.get('sync_files')}, "
+            f"sync_duration={last_snap.get('sync_duration')}"
+        )
+
+        snap2_bytes = last_snap.get("sync_bytes", "0")
+        snap2_files = last_snap.get("sync_files", 0)
+        if last_snap.get("name") == "snap2":
+            if isinstance(snap2_bytes, str):
+                has_bytes = snap2_bytes != "0.00 B" and snap2_bytes != "0"
+            else:
+                has_bytes = snap2_bytes > 0
+            if has_bytes and snap2_files > 0:
+                log.info(
+                    f"R2 VALIDATED: Delta sync transferred "
+                    f"sync_bytes={snap2_bytes}, sync_files={snap2_files}"
+                )
+            else:
+                log.warning(
+                    f"R2: Delta sync reported sync_bytes={snap2_bytes}, "
+                    f"sync_files={snap2_files} — expected non-zero"
+                )
+
+        snaps_now = path1_status.get("snaps_synced", 0)
+        if snaps_now <= snaps_before_r2:
             raise CommandFailed(
-                f"R2 FAILED: Expected snaps_synced >= 2, got {path1_status.get('snaps_synced')}"
+                f"R2 FAILED: snaps_synced did not increment, "
+                f"before={snaps_before_r2}, after={snaps_now}"
             )
-        log.info("R2 PASSED: snaps_synced incremented after delta sync")
+        log.info(
+            f"R2 PASSED: snaps_synced incremented "
+            f"({snaps_before_r2} -> {snaps_now}) after delta sync"
+        )
 
         # ============================================================
         # R16: Snapdiff and Blockdiff verification
