@@ -1,3 +1,7 @@
+# TFA rerun: kept deploy + client config + failed tests only
+# Source run: https://10.8.128.2/cephci-jenkins/ibm-cos/IBM/9.2/rhel-10/regression/20.2.2-118/cephfs/112/logs/Regression_Suite_NFS/
+# Pipeline metadata: metadata/tentacle/cephfs.yaml (regression)
+# Failed: 2 node nfs cluster, Mount same volume on fuse,kernel and nfs and runIOs, Move Data bw nfs and cephfs exports, backup and restore data bw nfs exports and local dir, cephfs nfs RO and RW export, cephfs nfs export creation using config file, cephfs nfs export for subvolume, cephfs nfs mount with fstab entry, cephfs nfs snapshot clone operations, cephfs nfs subvolume & subvolumegroup operations, cephfs nfs with io and network failures, cephfs_nfs_byok, data integrity between cephfs & nfs mounts, existing path cephfs nfs export, modifying_nfs_cluster_invalid_value, nfs cluster host changes and verification, nfs_file_attributes_retention_bw_nfs_and_localfs, nfs_file_transfer_bw_nfs_and_localfs, nfs_multiple_export_using_single_conf, recreate same name nfs cluster, setup Cleanup after the test suite, zipping & unzipping files on nfs export
 ######################################################################################################################
   # Suite file : tier-2_file-dir-lay_vol-mgmt_nfs.yaml
   # Conf File : conf/squid/cephfs/tier-2_cephfs_7-node-cluster.yaml
@@ -176,12 +180,12 @@ tests:
       destroy-cluster: false
       module: test_client.py
       name: "configure client"
-  - test:
-      abort-on-fail: false
-      desc: "test cephfs nfs export path"
-      module: cephfs_nfs.nfs_export_path.py
-      name: "cephfs nfs export path"
-      polarion-id: "CEPH-83574028"
+#  - test:
+#      abort-on-fail: false
+#      desc: "test cephfs nfs export path"
+#      module: cephfs_nfs.nfs_export_path.py
+#      name: "cephfs nfs export path"
+#      polarion-id: "CEPH-83574028"
   - test:
       abort-on-fail: false
       desc: "test cephfs nfs snapshot clone operations"
@@ -194,12 +198,12 @@ tests:
       module: cephfs_nfs.nfs_subvolume_subvolumegroup.py
       name: "cephfs nfs subvolume & subvolumegroup operations"
       polarion-id: "CEPH-83574027"
-  - test:
-      abort-on-fail: false
-      desc: "test cephfs nfs read only export"
-      module: cephfs_nfs.read_only_nfs_export.py
-      name: "cephfs nfs read only export"
-      polarion-id: "CEPH-83574003"
+#  - test:
+#      abort-on-fail: false
+#      desc: "test cephfs nfs read only export"
+#      module: cephfs_nfs.read_only_nfs_export.py
+#      name: "cephfs nfs read only export"
+#      polarion-id: "CEPH-83574003"
   - test:
       abort-on-fail: false
       desc: "test recreation of cephfs nfs cluster with same name"
@@ -224,12 +228,12 @@ tests:
       module: cephfs_nfs.subvolume_export.py
       name: "cephfs nfs export for subvolume"
       polarion-id: "CEPH-83573993"
-  - test:
-      abort-on-fail: false
-      desc: "Create cephfs nfs export on non-existing directory"
-      module: cephfs_nfs.nfs_non_exist_export_path.py
-      name: "Create cephfs nfs export on non-existing directory"
-      polarion-id: "CEPH-83573669"
+#  - test:
+#      abort-on-fail: false
+#      desc: "Create cephfs nfs export on non-existing directory"
+#      module: cephfs_nfs.nfs_non_exist_export_path.py
+#      name: "Create cephfs nfs export on non-existing directory"
+#      polarion-id: "CEPH-83573669"
   - test:
       abort-on-fail: false
       desc: "Export and import data between NFS and CephFS"
@@ -260,12 +264,12 @@ tests:
       module: cephfs_nfs.data_backup_restore_bw_nfs_and_local_mounts.py
       name: "backup and restore data bw nfs exports and local dir"
       polarion-id: "CEPH-11314"
-  - test:
-      abort-on-fail: false
-      desc: "Verifying ceph nfs ls export with --detailed option and info with cluster_id"
-      module: cephfs_nfs.nfs_info_cluster_id_and_ls_export_detailed.py
-      name: "nfs ls export verification and info with cluster_id"
-      polarion-id: "CEPH-83573992"
+#  - test:
+#      abort-on-fail: false
+#      desc: "Verifying ceph nfs ls export with --detailed option and info with cluster_id"
+#      module: cephfs_nfs.nfs_info_cluster_id_and_ls_export_detailed.py
+#      name: "nfs ls export verification and info with cluster_id"
+#      polarion-id: "CEPH-83573992"
   - test:
       abort-on-fail: false
       desc: "Apply various number of hosts to nfs cluster and verify the changes"
