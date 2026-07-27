@@ -529,8 +529,19 @@ def run(ceph_cluster, **kw):
         for path, dir_status in final_status.items():
             synced = dir_status.get("snaps_synced", 0)
             log.info(f"{path}: snaps_synced={synced}")
-            if synced < 1:
-                raise CommandFailed(f"snaps_synced should be >= 1 for {path}")
+
+        path1_synced = final_status.get(path1_key, {}).get("snaps_synced", 0)
+        if path1_synced < 1:
+            raise CommandFailed(
+                f"snaps_synced should be >= 1 for {path1_key}, got {path1_synced}"
+            )
+        log.info(f"Path1 snaps_synced={path1_synced} — OK")
+
+        path2_synced = final_status.get(path2_key, {}).get("snaps_synced", 0)
+        log.info(
+            f"Path2 snaps_synced={path2_synced} (no snaps created on path2, "
+            f"0 is expected)"
+        )
 
         log.info("All asok metrics scenarios passed")
 
