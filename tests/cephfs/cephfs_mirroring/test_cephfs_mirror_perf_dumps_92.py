@@ -393,7 +393,10 @@ def run(ceph_cluster, **kw):
 
         dir_states_seen = set()
         syncing_counters_captured = False
+        dirstate_done = False
         for poll_i in range(90):
+            if dirstate_done:
+                break
             try:
                 data = fs_mirroring_utils.get_cephfs_mirror_counters(
                     cephfs_mirror_node, fsid, asok_file
@@ -432,7 +435,7 @@ def run(ceph_cluster, **kw):
                                 f"last_sync_bytes={counters.get('last_sync_bytes', 0)}, "
                                 f"last_sync_files={counters.get('last_sync_files', 0)}"
                             )
-                            break
+                            dirstate_done = True
                         found_entry = True
                         break
                 if not found_entry:
@@ -478,7 +481,10 @@ def run(ceph_cluster, **kw):
         )
 
         bps_validated = False
+        bps_done = False
         for poll_i in range(90):
+            if bps_done:
+                break
             try:
                 data = fs_mirroring_utils.get_cephfs_mirror_counters(
                     cephfs_mirror_node, fsid, asok_file
@@ -510,7 +516,7 @@ def run(ceph_cluster, **kw):
                                 f"[BPS Poll {poll_i}] snap synced, "
                                 f"last_sync_bytes={counters.get('last_sync_bytes', 0)}"
                             )
-                            break
+                            bps_done = True
                         break
             except Exception as e:
                 log.warning(f"BPS poll error: {e}")
