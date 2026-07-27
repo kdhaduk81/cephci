@@ -7,7 +7,7 @@ import traceback
 from ceph.ceph import CommandFailed
 from tests.cephfs.cephfs_mirroring.cephfs_mirroring_utils import CephfsMirroringUtils
 from tests.cephfs.cephfs_utilsV1 import FsUtils
-from tests.cephfs.snapshot_clone.cephfs_snap_utils import CephfsSnapshotUtils
+from tests.cephfs.snapshot_clone.cephfs_snap_utils import SnapUtils
 from utility.log import Log
 
 log = Log(__name__)
@@ -65,7 +65,7 @@ def run(ceph_cluster, **kw):
         fs_mirroring_utils = CephfsMirroringUtils(
             ceph_cluster_dict.get("ceph1"), ceph_cluster_dict.get("ceph2")
         )
-        snap_util = CephfsSnapshotUtils(ceph_cluster_dict.get("ceph1"))
+        snap_util = SnapUtils(ceph_cluster_dict.get("ceph1"))
         build = config.get("build", config.get("rhbuild"))
         source_clients = ceph_cluster_dict.get("ceph1").get_ceph_objects("client")
         target_clients = ceph_cluster_dict.get("ceph2").get_ceph_objects("client")

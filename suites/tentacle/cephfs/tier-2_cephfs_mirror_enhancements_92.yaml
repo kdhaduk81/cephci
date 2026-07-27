@@ -34,6 +34,11 @@
 #     Node5 - OSD, MDS
 #     Node6 - Client
 #===============================================================================================
+# TFA rerun: kept deploy + client config + failed/incomplete tests only
+# Source run: http://magna002.ceph.redhat.com/cephci-jenkins/cephci-run-RSH2YG/
+# Failed/incomplete: checkpoints (SnapUtils import), perf dumps, tri-interface
+# Passed (commented): improved stats, disruptive ops, asok metrics, MGR interface
+#===============================================================================================
 tests:
   - test:
       name: setup install pre-requisistes
@@ -183,55 +188,55 @@ tests:
         module: test_client.py
         name: "configure client"
 
-  # P1 Improved Stats — R1, R2, R5, R7, R12, R16 (dual asok + MGR validation)
-  - test:
-      abort-on-fail: false
-      desc: "Validate improved mirroring stats with dual-interface (asok + MGR) checks"
-      clusters:
-        ceph1:
-          config:
-            name: Validate improved mirroring stats for 9.2
-      module: cephfs_mirroring.test_cephfs_mirror_improved_stats.py
-      name: Validate improved mirroring stats for 9.2
-      polarion-id: "CEPH-83575001"
+  # P1 Improved Stats — PASSED on RSH2YG
+  # - test:
+  #     abort-on-fail: false
+  #     desc: "Validate improved mirroring stats with dual-interface (asok + MGR) checks"
+  #     clusters:
+  #       ceph1:
+  #         config:
+  #           name: Validate improved mirroring stats for 9.2
+  #     module: cephfs_mirroring.test_cephfs_mirror_improved_stats.py
+  #     name: Validate improved mirroring stats for 9.2
+  #     polarion-id: "CEPH-83575001"
 
-  # R8: Disruptive ops — sync failure does not corrupt metrics
-  - test:
-      abort-on-fail: false
-      desc: "Validate sync failure does not corrupt metrics (failure injection + recovery)"
-      clusters:
-        ceph1:
-          config:
-            name: Validate mirroring disruptive ops for 9.2
-      module: cephfs_mirroring.test_cephfs_mirror_disruptive_ops.py
-      name: Validate mirroring disruptive ops for 9.2
-      polarion-id: "CEPH-83575002"
+  # R8: Disruptive ops — PASSED on RSH2YG
+  # - test:
+  #     abort-on-fail: false
+  #     desc: "Validate sync failure does not corrupt metrics (failure injection + recovery)"
+  #     clusters:
+  #       ceph1:
+  #         config:
+  #           name: Validate mirroring disruptive ops for 9.2
+  #     module: cephfs_mirroring.test_cephfs_mirror_disruptive_ops.py
+  #     name: Validate mirroring disruptive ops for 9.2
+  #     polarion-id: "CEPH-83575002"
 
-  # Table 0: Asok Metrics — 12 functional scenarios
-  - test:
-      abort-on-fail: false
-      desc: "Validate asok mirroring metrics (schema, sync-mode, ETA, crawl, failure, snapdiff)"
-      clusters:
-        ceph1:
-          config:
-            name: Validate asok mirroring metrics for 9.2 enhancements
-      module: cephfs_mirroring.test_cephfs_mirror_asok_metrics_92.py
-      name: Validate asok mirroring metrics for 9.2 enhancements
-      polarion-id: "CEPH-83632744"
+  # Table 0: Asok Metrics — PASSED on RSH2YG
+  # - test:
+  #     abort-on-fail: false
+  #     desc: "Validate asok mirroring metrics (schema, sync-mode, ETA, crawl, failure, snapdiff)"
+  #     clusters:
+  #       ceph1:
+  #         config:
+  #           name: Validate asok mirroring metrics for 9.2 enhancements
+  #     module: cephfs_mirroring.test_cephfs_mirror_asok_metrics_92.py
+  #     name: Validate asok mirroring metrics for 9.2 enhancements
+  #     polarion-id: "CEPH-83632744"
 
-  # Table 1: MGR Interface — 10 functional scenarios
-  - test:
-      abort-on-fail: false
-      desc: "Validate MGR mirror status interface (OMAP, stale, cache, CLI sanity)"
-      clusters:
-        ceph1:
-          config:
-            name: Validate MGR mirror status interface for 9.2
-      module: cephfs_mirroring.test_cephfs_mirror_mgr_interface_92.py
-      name: Validate MGR mirror status interface for 9.2
-      polarion-id: "CEPH-83632824"
+  # Table 1: MGR Interface — PASSED on RSH2YG
+  # - test:
+  #     abort-on-fail: false
+  #     desc: "Validate MGR mirror status interface (OMAP, stale, cache, CLI sanity)"
+  #     clusters:
+  #       ceph1:
+  #         config:
+  #           name: Validate MGR mirror status interface for 9.2
+  #     module: cephfs_mirroring.test_cephfs_mirror_mgr_interface_92.py
+  #     name: Validate MGR mirror status interface for 9.2
+  #     polarion-id: "CEPH-83632824"
 
-  # Table 2: Checkpoints — 6 functional tests
+  # Table 2: Checkpoints — failed/incomplete on RSH2YG (ImportError CephfsSnapshotUtils)
   - test:
       abort-on-fail: false
       desc: "Validate mirroring checkpoint commands (lifecycle, state transitions, pruning)"
