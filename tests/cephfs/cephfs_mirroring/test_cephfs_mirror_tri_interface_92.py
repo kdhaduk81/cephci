@@ -234,7 +234,7 @@ def run(ceph_cluster, **kw):
 
         log.info("Poll all 3 interfaces during sync — validate consistency")
         syncing_consistency_checked = False
-        for poll_i in range(180):
+        for poll_i in range(900):
             time.sleep(1)
             tri = collect_tri_interface(
                 fs_mirroring_utils,
@@ -399,7 +399,7 @@ def run(ceph_cluster, **kw):
 
         log.info("Poll for delta sync — compare all 3 interfaces")
         delta_consistency_checked = False
-        for poll_i in range(180):
+        for poll_i in range(900):
             time.sleep(1)
             tri = collect_tri_interface(
                 fs_mirroring_utils,

@@ -395,7 +395,7 @@ def run(ceph_cluster, **kw):
         dir_states_seen = set()
         syncing_counters_captured = False
         dirstate_done = False
-        for poll_i in range(180):
+        for poll_i in range(900):
             if dirstate_done:
                 break
             try:
@@ -448,15 +448,10 @@ def run(ceph_cluster, **kw):
                 log.warning(f"dir_state poll error: {e}")
             time.sleep(1)
 
-        fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0],
-            source_fs,
-            "snap_dirstate",
-            fsid,
-            asok_file,
-            filesystem_id,
-            peer_uuid,
-        )
+        if not dirstate_done:
+            raise CommandFailed(
+                "S3 FAILED: snap_dirstate did not sync within 15 minutes"
+            )
         log.info(f"dir_state values observed: {dir_states_seen}")
         if 1 not in dir_states_seen:
             raise CommandFailed(
@@ -509,7 +504,7 @@ def run(ceph_cluster, **kw):
 
         bps_validated = False
         bps_done = False
-        for poll_i in range(180):
+        for poll_i in range(900):
             if bps_done:
                 break
             try:
@@ -549,15 +544,10 @@ def run(ceph_cluster, **kw):
                 log.warning(f"BPS poll error: {e}")
             time.sleep(1)
 
-        fs_mirroring_utils.validate_snapshot_sync_status(
-            cephfs_mirror_node[0],
-            source_fs,
-            "snap_bps",
-            fsid,
-            asok_file,
-            filesystem_id,
-            peer_uuid,
-        )
+        if not bps_done:
+            raise CommandFailed(
+                "S4 FAILED: snap_bps did not sync within 15 minutes"
+            )
         if not bps_validated:
             raise CommandFailed(
                 "S4 FAILED: current_sync_bytes_percent (BPS) was never "

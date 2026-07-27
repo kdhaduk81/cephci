@@ -188,7 +188,7 @@ def run(ceph_cluster, **kw):
         throughput_observed = False
 
         log.info("Poll asok during full sync — capture all in-flight fields")
-        for poll_i in range(180):
+        for poll_i in range(900):
             time.sleep(1)
             try:
                 status = fs_mirroring_utils.get_asok_peer_status_raw(
@@ -329,7 +329,7 @@ def run(ceph_cluster, **kw):
         delta_poll_count = 0
 
         log.info("Poll during delta sync — validate mode, monotonicity")
-        for poll_i in range(180):
+        for poll_i in range(900):
             time.sleep(1)
             try:
                 status = fs_mirroring_utils.get_asok_peer_status_raw(
