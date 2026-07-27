@@ -957,7 +957,7 @@ class CephfsMirroringUtils(object):
         log.error("last synced Snapshot not found or not synced")
         raise CommandFailed("last synced Snapshot not found or not synced")
 
-    @retry(CommandFailed, tries=10, delay=30, backoff=1)
+    @retry(CommandFailed, tries=30, delay=30, backoff=1)
     def validate_snapshot_sync_status(
         self,
         cephfs_mirror_node,

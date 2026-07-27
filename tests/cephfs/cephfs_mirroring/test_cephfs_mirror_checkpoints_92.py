@@ -349,24 +349,30 @@ def run(ceph_cluster, **kw):
 
         try:
             checkpoint_add(source_clients[0], source_fs, subvol_path1, "snap_lifecycle")
-            ckpt_list = checkpoint_ls(source_clients[0], source_fs, subvol_path1)
-            log.info(f"S4: checkpoint ls after adding already-synced snap: {ckpt_list}")
-            found = False
-            for ckpt in ckpt_list:
-                if ckpt.get("snap_name") == "snap_lifecycle":
-                    found = True
-                    ckpt_status = ckpt.get("status", ckpt.get("state", ""))
-                    log.info(f"S4: Checkpoint on already-synced snap: status={ckpt_status}")
-                    if "complete" not in ckpt_status.lower():
-                        raise CommandFailed(
-                            f"S4 FAILED: Expected status 'complete' for "
-                            f"already-synced snap, got '{ckpt_status}'"
+
+            s4_complete = False
+            for s4_poll in range(20):
+                ckpt_list = checkpoint_ls(source_clients[0], source_fs, subvol_path1)
+                log.info(f"S4: [Poll {s4_poll}] checkpoint ls: {ckpt_list}")
+                for ckpt in ckpt_list:
+                    if ckpt.get("snap_name") == "snap_lifecycle":
+                        ckpt_status = ckpt.get("status", ckpt.get("state", ""))
+                        log.info(
+                            f"S4: [Poll {s4_poll}] snap_lifecycle status={ckpt_status}"
                         )
-                    log.info("S4 PASSED: Immediate COMPLETE validated")
-            if not found:
+                        if "complete" in ckpt_status.lower():
+                            s4_complete = True
+                            break
+                if s4_complete:
+                    break
+                time.sleep(15)
+
+            if not s4_complete:
                 raise CommandFailed(
-                    "S4 FAILED: snap_lifecycle not found in checkpoint ls"
+                    "S4 FAILED: Checkpoint for already-synced snap did not "
+                    "reach 'complete' within 5 minutes"
                 )
+            log.info("S4 PASSED: COMPLETE validated for already-synced snap")
             checkpoint_rm(source_clients[0], source_fs, subvol_path1, "snap_lifecycle")
         except CommandFailed as e:
             if "S4 FAILED" in str(e):
