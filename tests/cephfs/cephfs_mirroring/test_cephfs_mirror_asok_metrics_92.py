@@ -75,7 +75,7 @@ def run(ceph_cluster, **kw):
 
         subvol_group_name = "subvolgroup_asok"
         subvol_name = "subvol_asok"
-        subvol_size = "5368709120"
+        subvol_size = "12884901888"
         mounting_dir = "".join(
             random.choice(string.ascii_lowercase + string.digits)
             for _ in list(range(10))
@@ -171,10 +171,11 @@ def run(ceph_cluster, **kw):
         log.info("Scenario 2: Full sync — all in-flight metrics (500 MiB)")
         log.info("=" * 60)
 
-        log.info("Write 500 MiB data for observable full sync")
+        log.info("Write 5 GiB data for observable full sync")
         source_clients[0].exec_command(
             sudo=True,
-            cmd=f"dd if=/dev/urandom of={mount_path1}fulldata bs=1M count=500",
+            cmd=f"dd if=/dev/urandom of={mount_path1}fulldata bs=1M count=5120",
+            timeout=600,
         )
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_full"
@@ -187,7 +188,7 @@ def run(ceph_cluster, **kw):
         throughput_observed = False
 
         log.info("Poll asok during full sync — capture all in-flight fields")
-        for poll_i in range(90):
+        for poll_i in range(180):
             time.sleep(1)
             try:
                 status = fs_mirroring_utils.get_asok_peer_status_raw(
@@ -252,13 +253,25 @@ def run(ceph_cluster, **kw):
                  f"throughput_observed={throughput_observed}")
 
         if not sync_mode_full:
-            log.warning("S2: sync-mode=full was NOT captured during polling")
-        if not eta_observed:
-            log.warning("S2: ETA was NOT observed during sync")
+            raise CommandFailed(
+                "S2 FAILED: sync-mode=full was NOT captured during 5 GiB sync"
+            )
+        log.info("S2: sync-mode=full captured")
+
         if not crawl_observed:
-            log.warning("S2: Crawl state was NOT observed during sync")
+            raise CommandFailed(
+                "S2 FAILED: Crawl state was NOT observed during 5 GiB sync"
+            )
+        log.info("S2: Crawl state captured")
+
         if not throughput_observed:
-            log.warning("S2: Throughput was NOT observed during sync")
+            raise CommandFailed(
+                "S2 FAILED: Throughput was NOT observed during 5 GiB sync"
+            )
+        log.info("S2: Throughput captured")
+
+        if not eta_observed:
+            log.warning("S2: ETA was NOT observed during sync (may show 'calculating...')")
 
         # ============================================================
         # Scenario 3: Delta sync — sync-mode, monotonicity, snapdiff
@@ -299,11 +312,12 @@ def run(ceph_cluster, **kw):
             cmd=f"dd if=/dev/urandom of={mount_path1}large_file "
             f"bs=4K count=1 conv=notrunc seek=100 2>/dev/null",
         )
-        log.info("Add 20 NEW files (25 MiB each = 500 MiB) for observable delta sync")
+        log.info("Add 20 NEW files (256 MiB each = 5 GiB) for observable delta sync")
         source_clients[0].exec_command(
             sudo=True,
             cmd=f"for i in $(seq 1 20); do dd if=/dev/urandom "
-            f"of={mount_path1}delta_$i bs=1M count=25 2>/dev/null; done",
+            f"of={mount_path1}delta_$i bs=1M count=256 2>/dev/null; done",
+            timeout=600,
         )
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_delta"
@@ -315,7 +329,7 @@ def run(ceph_cluster, **kw):
         delta_poll_count = 0
 
         log.info("Poll during delta sync — validate mode, monotonicity")
-        for poll_i in range(90):
+        for poll_i in range(180):
             time.sleep(1)
             try:
                 status = fs_mirroring_utils.get_asok_peer_status_raw(
@@ -384,9 +398,16 @@ def run(ceph_cluster, **kw):
         )
 
         if not sync_mode_delta:
-            log.warning("S3: sync-mode=delta was NOT captured during polling")
+            raise CommandFailed(
+                "S3 FAILED: sync-mode=delta was NOT captured during 5 GiB delta sync"
+            )
+        log.info("S3: sync-mode=delta captured")
+
         if not monotonic:
-            log.warning("S3: Monotonicity violations detected during delta sync")
+            raise CommandFailed(
+                "S3 FAILED: Monotonicity violations detected during delta sync"
+            )
+        log.info("S3: Monotonicity maintained throughout delta sync")
 
         # ============================================================
         # Scenario 4: last_synced_snap enrichment (assert non-zero)
@@ -421,16 +442,15 @@ def run(ceph_cluster, **kw):
         sync_duration = path1_last.get("sync_duration", "0s")
 
         if sync_bytes in ("0", "0.00 B") or sync_files == 0:
-            log.warning(
-                f"S4: last_synced_snap has zero metrics — "
+            raise CommandFailed(
+                f"S4 FAILED: last_synced_snap has zero metrics after 5 GiB sync — "
                 f"sync_bytes={sync_bytes}, sync_files={sync_files}, "
                 f"sync_duration={sync_duration}"
             )
-        else:
-            log.info(
-                f"S4 VALIDATED: sync_bytes={sync_bytes}, "
-                f"sync_files={sync_files}, sync_duration={sync_duration}"
-            )
+        log.info(
+            f"S4 VALIDATED: sync_bytes={sync_bytes}, "
+            f"sync_files={sync_files}, sync_duration={sync_duration}"
+        )
 
         if path1_last.get("name") == "snap_delta" and sync_files > 0:
             if sync_files <= 26:

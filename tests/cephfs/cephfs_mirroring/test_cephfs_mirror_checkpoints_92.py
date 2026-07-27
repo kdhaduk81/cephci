@@ -104,7 +104,7 @@ def run(ceph_cluster, **kw):
 
         subvol_group_name = "subvolgroup_ckpt"
         subvol_name = "subvol_ckpt"
-        subvol_size = "5368709120"
+        subvol_size = "12884901888"
         mounting_dir = "".join(
             random.choice(string.ascii_lowercase + string.digits)
             for _ in list(range(10))
@@ -282,10 +282,11 @@ def run(ceph_cluster, **kw):
         log.info("Scenario 3: State transition CREATED → COMPLETE")
         log.info("=" * 60)
 
-        log.info("S3: Write 500 MiB to ensure sync takes time")
+        log.info("S3: Write 5 GiB to ensure sync takes time")
         source_clients[0].exec_command(
             sudo=True,
-            cmd=f"dd if=/dev/urandom of={mount_path}state_data bs=1M count=500",
+            cmd=f"dd if=/dev/urandom of={mount_path}state_data bs=1M count=5120",
+            timeout=600,
         )
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path}.snap/snap_state"
@@ -306,7 +307,7 @@ def run(ceph_cluster, **kw):
             log.info("S3: Captured CREATED state before sync completes")
         elif initial_status and "complete" in initial_status.lower():
             log.warning(
-                "S3: Status already COMPLETE — 500 MiB synced too fast "
+                "S3: Status already COMPLETE — 5 GiB synced too fast "
                 "to observe CREATED state"
             )
         else:

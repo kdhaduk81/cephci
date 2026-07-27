@@ -106,7 +106,7 @@ def run(ceph_cluster, **kw):
 
         subvol_group_name = "subvolgroup_perf"
         subvol_name = "subvol_perf"
-        subvol_size = "5368709120"
+        subvol_size = "12884901888"
         mounting_dir = "".join(
             random.choice(string.ascii_lowercase + string.digits)
             for _ in list(range(10))
@@ -385,7 +385,8 @@ def run(ceph_cluster, **kw):
 
         source_clients[0].exec_command(
             sudo=True,
-            cmd=f"dd if=/dev/urandom of={mount_path1}state_data bs=1M count=500",
+            cmd=f"dd if=/dev/urandom of={mount_path1}state_data bs=1M count=5120",
+            timeout=600,
         )
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_dirstate"
@@ -394,7 +395,7 @@ def run(ceph_cluster, **kw):
         dir_states_seen = set()
         syncing_counters_captured = False
         dirstate_done = False
-        for poll_i in range(90):
+        for poll_i in range(180):
             if dirstate_done:
                 break
             try:
@@ -457,13 +458,38 @@ def run(ceph_cluster, **kw):
             peer_uuid,
         )
         log.info(f"dir_state values observed: {dir_states_seen}")
-        if 1 in dir_states_seen:
-            log.info("dir_state=1 (syncing) was observed during sync")
-        else:
-            log.warning(
-                "dir_state=1 (syncing) was NOT observed — "
-                "sync completed too fast to capture"
+        if 1 not in dir_states_seen:
+            raise CommandFailed(
+                "S3 FAILED: dir_state=1 (syncing) was NOT observed "
+                "during 5 GiB sync — expected syncing state"
             )
+        log.info("S3: dir_state=1 (syncing) was observed during sync")
+
+        if not syncing_counters_captured:
+            raise CommandFailed(
+                "S3 FAILED: No syncing counters captured "
+                "(read_bps, write_bps, etc.) during 5 GiB sync"
+            )
+        log.info("S3: Syncing counters captured successfully")
+
+        data_final = fs_mirroring_utils.get_cephfs_mirror_counters(
+            cephfs_mirror_node, fsid, asok_file
+        )
+        for entry in data_final.get("cephfs_mirror_directory", []):
+            if subvol_path1.rstrip("/") in entry.get("labels", {}).get("directory", ""):
+                last_bytes = entry.get("counters", {}).get("last_sync_bytes", 0)
+                last_files = entry.get("counters", {}).get("last_sync_files", 0)
+                last_dur = entry.get("counters", {}).get("last_sync_duration_seconds", 0)
+                log.info(
+                    f"S3 last_* counters: last_sync_bytes={last_bytes}, "
+                    f"last_sync_files={last_files}, "
+                    f"last_sync_duration_seconds={last_dur}"
+                )
+                if last_bytes == 0:
+                    raise CommandFailed(
+                        "S3 FAILED: last_sync_bytes=0 after 5 GiB sync"
+                    )
+                log.info("S3: last_sync_bytes validated (non-zero)")
 
         # ============================================================
         # Scenario 4: Basis points encoding
@@ -474,7 +500,8 @@ def run(ceph_cluster, **kw):
 
         source_clients[0].exec_command(
             sudo=True,
-            cmd=f"dd if=/dev/urandom of={mount_path2}bps_data bs=1M count=500",
+            cmd=f"dd if=/dev/urandom of={mount_path2}bps_data bs=1M count=5120",
+            timeout=600,
         )
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path2}.snap/snap_bps"
@@ -482,7 +509,7 @@ def run(ceph_cluster, **kw):
 
         bps_validated = False
         bps_done = False
-        for poll_i in range(90):
+        for poll_i in range(180):
             if bps_done:
                 break
             try:
@@ -531,7 +558,25 @@ def run(ceph_cluster, **kw):
             filesystem_id,
             peer_uuid,
         )
-        log.info(f"Basis points validated: {bps_validated}")
+        if not bps_validated:
+            raise CommandFailed(
+                "S4 FAILED: current_sync_bytes_percent (BPS) was never "
+                "non-zero during 5 GiB sync — expected progress percentage"
+            )
+        log.info("S4: Basis points (BPS) validated — non-zero captured during sync")
+
+        data_bps = fs_mirroring_utils.get_cephfs_mirror_counters(
+            cephfs_mirror_node, fsid, asok_file
+        )
+        for entry in data_bps.get("cephfs_mirror_directory", []):
+            if subvol_path2.rstrip("/") in entry.get("labels", {}).get("directory", ""):
+                last_bytes = entry.get("counters", {}).get("last_sync_bytes", 0)
+                log.info(f"S4 last_sync_bytes={last_bytes}")
+                if last_bytes == 0:
+                    raise CommandFailed(
+                        "S4 FAILED: last_sync_bytes=0 after 5 GiB sync"
+                    )
+                log.info("S4: last_sync_bytes validated (non-zero)")
 
         # ============================================================
         # Scenario 5: Prometheus scrape end-to-end

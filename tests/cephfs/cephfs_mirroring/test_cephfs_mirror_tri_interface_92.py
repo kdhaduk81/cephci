@@ -153,7 +153,7 @@ def run(ceph_cluster, **kw):
 
         subvol_group_name = "subvolgroup_tri"
         subvol_name = "subvol_tri"
-        subvol_size = "5368709120"
+        subvol_size = "12884901888"
         mounting_dir = "".join(
             random.choice(string.ascii_lowercase + string.digits)
             for _ in list(range(10))
@@ -222,10 +222,11 @@ def run(ceph_cluster, **kw):
         log.info("Scenario 1: Tri-interface consistency (full/delta/idle)")
         log.info("=" * 60)
 
-        log.info("Full sync: write large data to ensure syncing state is observable")
+        log.info("Full sync: write 5 GiB to ensure syncing state is observable")
         source_clients[0].exec_command(
             sudo=True,
-            cmd=f"dd if=/dev/urandom of={mount_path1}tri_full bs=1M count=500",
+            cmd=f"dd if=/dev/urandom of={mount_path1}tri_full bs=1M count=5120",
+            timeout=600,
         )
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_tri_full"
@@ -233,7 +234,7 @@ def run(ceph_cluster, **kw):
 
         log.info("Poll all 3 interfaces during sync — validate consistency")
         syncing_consistency_checked = False
-        for poll_i in range(90):
+        for poll_i in range(180):
             time.sleep(1)
             tri = collect_tri_interface(
                 fs_mirroring_utils,
@@ -324,9 +325,11 @@ def run(ceph_cluster, **kw):
                     break
 
         if not syncing_consistency_checked:
-            log.info(
-                "Sync completed too fast to capture syncing state across interfaces"
+            raise CommandFailed(
+                "S1 FAILED: Syncing state was NOT captured across interfaces "
+                "during 5 GiB full sync — expected to observe syncing state"
             )
+        log.info("S1: Syncing consistency checked across all 3 interfaces")
 
         log.info("Idle state: validate all 3 interfaces show idle consistently")
         time.sleep(5)
@@ -351,39 +354,44 @@ def run(ceph_cluster, **kw):
         log.info(f"  MGR:  state={mgr_idle}, snaps_synced={mgr_synced}")
         log.info(f"  Perf: dir_state={perf_idle}")
 
-        if asok_idle == "idle" and mgr_idle == "idle":
-            log.info("  CONSISTENT: Both asok and MGR show idle")
-        else:
-            log.warning(f"  MISMATCH: asok={asok_idle}, mgr={mgr_idle}")
+        if asok_idle != "idle":
+            raise CommandFailed(
+                f"S1 FAILED: Asok state={asok_idle}, expected idle after sync"
+            )
+        if mgr_idle != "idle":
+            raise CommandFailed(
+                f"S1 FAILED: MGR state={mgr_idle}, expected idle after sync"
+            )
+        log.info("  CONSISTENT: Both asok and MGR show idle")
         if perf_idle == 0:
             log.info("  CONSISTENT: Perf dir_state=0 (idle)")
 
-        if asok_synced == mgr_synced:
-            log.info(f"  CONSISTENT: snaps_synced matches ({asok_synced})")
-        else:
+        if asok_synced != mgr_synced:
             log.warning(
-                f"  snaps_synced mismatch: asok={asok_synced}, mgr={mgr_synced}"
+                f"  snaps_synced mismatch: asok={asok_synced}, mgr={mgr_synced} "
+                f"(MGR may lag due to tick interval)"
             )
+        else:
+            log.info(f"  CONSISTENT: snaps_synced matches ({asok_synced})")
 
         asok_last = tri_idle["asok"].get("last_synced_snap", {})
         mgr_last = tri_idle["mgr"].get("last_synced_snap", {})
         log.info(f"  Asok last_synced_snap: {json.dumps(asok_last, indent=2)}")
         log.info(f"  MGR  last_synced_snap: {json.dumps(mgr_last, indent=2)}")
-        if asok_last.get("name") == mgr_last.get("name"):
-            log.info(
-                f"  CONSISTENT: last_synced_snap name matches "
-                f"({asok_last.get('name')})"
+        if asok_last.get("name") != mgr_last.get("name"):
+            raise CommandFailed(
+                f"S1 FAILED: last_synced_snap mismatch: "
+                f"asok={asok_last.get('name')}, mgr={mgr_last.get('name')}"
             )
-        else:
-            log.warning(
-                f"  MISMATCH: asok last={asok_last.get('name')}, "
-                f"mgr last={mgr_last.get('name')}"
-            )
+        log.info(
+            f"  CONSISTENT: last_synced_snap name matches ({asok_last.get('name')})"
+        )
 
-        log.info("Delta sync: modify and create second snapshot")
+        log.info("Delta sync: write 5 GiB new data for second snapshot")
         source_clients[0].exec_command(
             sudo=True,
-            cmd=f"dd if=/dev/urandom of={mount_path1}tri_delta bs=1M count=500",
+            cmd=f"dd if=/dev/urandom of={mount_path1}tri_delta bs=1M count=5120",
+            timeout=600,
         )
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_tri_delta"
@@ -391,7 +399,7 @@ def run(ceph_cluster, **kw):
 
         log.info("Poll for delta sync — compare all 3 interfaces")
         delta_consistency_checked = False
-        for poll_i in range(90):
+        for poll_i in range(180):
             time.sleep(1)
             tri = collect_tri_interface(
                 fs_mirroring_utils,

@@ -132,19 +132,19 @@ def run(ceph_cluster, **kw):
         subvol_details = [
             {
                 "subvol_name": "subvol_stats_1",
-                "subvol_size": "5368709120",
+                "subvol_size": "12884901888",
                 "mount_type": "kernel",
                 "mount_dir": f"/mnt/cephfs_kernel{mounting_dir}_1",
             },
             {
                 "subvol_name": "subvol_stats_2",
-                "subvol_size": "5368709120",
+                "subvol_size": "12884901888",
                 "mount_type": "fuse",
                 "mount_dir": f"/mnt/cephfs_fuse{mounting_dir}_1",
             },
             {
                 "subvol_name": "subvol_stats_3",
-                "subvol_size": "5368709120",
+                "subvol_size": "12884901888",
                 "mount_type": "kernel",
                 "mount_dir": f"/mnt/cephfs_kernel{mounting_dir}_2",
             },
@@ -381,11 +381,12 @@ def run(ceph_cluster, **kw):
         snaps_before_r2 = path1_status.get("snaps_synced", 0)
         log.info(f"R2: snaps_synced before delta snap = {snaps_before_r2}")
 
-        log.info("Write NEW unique files (delta_*) to ensure real data transfer")
+        log.info("Write NEW unique files (delta_*): 20 x 256 MiB = 5 GiB")
         source_clients[0].exec_command(
             sudo=True,
             cmd=f"for i in $(seq 1 20); do dd if=/dev/urandom "
-            f"of={mount_path1}delta_$i bs=1M count=5 2>/dev/null; done",
+            f"of={mount_path1}delta_$i bs=1M count=256 2>/dev/null; done",
+            timeout=600,
         )
 
         log.info("Create snap2 on dir1 (should trigger delta sync)")
