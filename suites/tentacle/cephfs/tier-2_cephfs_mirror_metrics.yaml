@@ -195,11 +195,21 @@ tests:
       polarion-id: "CEPH-83584059"
   - test:
       abort-on-fail: false
-      desc: "Validate CephFS mirroring HA operations for 9.2"
+      desc: "Validate mirroring disruptive ops and HA scenarios for 9.2"
       clusters:
         ceph1:
           config:
-            name: Validate daemon restart mid-sync, checkpoint persistence, MGR failover
-      module: cephfs_mirroring.test_cephfs_mirror_ha_ops_92.py
-      name: Validate CephFS mirroring HA operations for 9.2
-      polarion-id: "CEPH-83632850"
+            name: Validate mirroring disruptive ops for 9.2
+      module: cephfs_mirroring.test_cephfs_mirror_disruptive_ops.py
+      name: Validate mirroring disruptive ops for 9.2
+      polarion-id: "CEPH-83575002"
+  - test:
+      abort-on-fail: false
+      desc: "Validate mirroring checkpoint commands and MGR bounce for 9.2"
+      clusters:
+        ceph1:
+          config:
+            name: Validate mirroring checkpoints for 9.2
+      module: cephfs_mirroring.test_cephfs_mirror_checkpoints_92.py
+      name: Validate mirroring checkpoints for 9.2
+      polarion-id: "CEPH-83632782"
