@@ -153,6 +153,44 @@ tests:
       name: configure client
   - test:
       abort-on-fail: false
+      desc: "Enable ceph debug logs"
+      module: cephfs_logs_util.py
+      name: cephfs-enable-logs
+      clusters:
+        ceph1:
+          config:
+            ENABLE_LOGS: 1
+            daemon_list: ['mds', 'client', 'osd', 'mgr', 'mon']
+            daemon_dbg_level: {'mds': 20, 'client': 10, 'osd': 5, 'mgr': 5, 'mon': 5}
+        ceph2:
+          config:
+            ENABLE_LOGS: 1
+            daemon_list: ['mds', 'client', 'osd', 'mgr', 'mon']
+            daemon_dbg_level: {'mds': 20, 'client': 10, 'osd': 5, 'mgr': 5, 'mon': 5}
+
+  - test:
+      abort-on-fail: false
+      desc: "Enable cephfs-mirror debug logs"
+      module: exec.py
+      name: cephfs-mirror-enable-logs
+      clusters:
+        ceph1:
+          config:
+            commands:
+              - "ceph config set client.cephfs-mirror log_to_file true"
+              - "ceph config set client.cephfs-mirror debug_cephfs_mirror 20"
+            sudo: true
+  - test:
+      abort-on-fail: false
+      desc: "Set size limit for log rotation"
+      name: size limit for log rotation
+      module: cephfs_logs_util.py
+
+      config:
+        LOG_ROTATE_SIZE: 1
+        log_size: '200M'
+  - test:
+      abort-on-fail: false
       desc: "Setup Crash configuration"
       module: cephfs_crash_util.py
       name: cephfs-crash-setup
@@ -160,7 +198,7 @@ tests:
         ceph1:
           config:
             crash_setup: 1
-            daemon_list: ['mds', 'osd', 'mgr', 'mon','nfs']
+            daemon_list: ['mds', 'osd', 'mgr', 'mon','nfs','cephfs-mirror']
         ceph2:
           config:
             crash_setup: 1
@@ -331,7 +369,7 @@ tests:
         ceph1:
           config:
             crash_check: 1
-            daemon_list: ['mds', 'osd', 'mgr', 'mon','nfs']
+            daemon_list: ['mds', 'osd', 'mgr', 'mon','nfs','cephfs-mirror']
         ceph2:
           config:
             crash_check: 1
