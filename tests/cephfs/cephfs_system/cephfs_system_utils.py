@@ -32,6 +32,7 @@ class CephFSSystemUtils(object):
         self.mdss = ceph_cluster.get_ceph_objects("mds")
         self.osds = ceph_cluster.get_ceph_objects("osd")
         self.nfss = ceph_cluster.get_ceph_objects("nfs")
+        self.cephfs_mirrors = ceph_cluster.get_ceph_objects("cephfs-mirror")
         self.clients = ceph_cluster.get_ceph_objects("client")
         self.fs_util = FsUtils(ceph_cluster)
 
@@ -132,6 +133,7 @@ class CephFSSystemUtils(object):
             "mon": self.mons,
             "osd": self.osds,
             "nfs": self.nfss,
+            "cephfs-mirror": self.cephfs_mirrors,
         }
         log_base_dir = os.path.dirname(log.logger.handlers[0].baseFilename)
 
@@ -176,6 +178,7 @@ class CephFSSystemUtils(object):
             "mon": self.mons,
             "osd": self.osds,
             "nfs": self.nfss,
+            "cephfs-mirror": self.cephfs_mirrors,
         }
 
         out, _ = client.exec_command(sudo=True, cmd="ceph fsid")
