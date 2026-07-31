@@ -6,6 +6,7 @@ import re
 import yaml
 from docopt import docopt
 
+from ceph.ceph import CommandFailed
 from cli.cephadm.cephadm import CephAdm
 from cli.utilities.packages import Rpm, SubscriptionManager
 from cli.utilities.utils import (
@@ -166,15 +167,36 @@ def get_ceph_var_logs(cluster, log_dir):
     """
     This method is to download and store
     ceph cluster var logs into log directory.
+
+    GNU tar exits with code 1 when files change while being archived
+    (common for live /var/log/ceph). Treat 0 and 1 as success; fail on >= 2.
     """
     download_dir = os.path.join(log_dir, "ceph_logs")
     os.makedirs(download_dir, exist_ok=True)
     for node in cluster.get_nodes():
         tar_file = f"{node.hostname}-cephlog.tar"
-        node.exec_command(
-            cmd=f"tar -C / --warning=no-file-changed -cvzf {tar_file} {_CEPH_VAR_LOG_DIR}",
-            sudo=True,
+        cmd = (
+            f"tar -C / --warning=no-file-changed -cvzf {tar_file} "
+            f"{_CEPH_VAR_LOG_DIR}"
         )
+        _, err, exit_code, _ = node.exec_command(
+            cmd=cmd,
+            sudo=True,
+            check_ec=False,
+            verbose=True,
+        )
+        if exit_code not in (0, 1):
+            raise CommandFailed(
+                f"{cmd} returned {err} and code {exit_code} on "
+                f"{node.hostname} [{node.ip_address}]"
+            )
+        if exit_code == 1:
+            log.warning(
+                "tar reported files changed while archiving %s on %s; "
+                "continuing with collected archive",
+                _CEPH_VAR_LOG_DIR,
+                node.hostname,
+            )
 
         node.download_file(
             src=tar_file,
