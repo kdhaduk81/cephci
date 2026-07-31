@@ -160,14 +160,17 @@ tests:
         ceph1:
           config:
             ENABLE_LOGS: 1
-            daemon_list: ['mds', 'client', 'osd', 'mgr', 'mon']
-            daemon_dbg_level: {'mds': 20, 'client': 10, 'osd': 5, 'mgr': 5, 'mon': 5}
+            daemon_list: ['mds', 'client', 'mgr', 'mon']
+            daemon_dbg_level: {'mds': 10, 'client': 10, 'mgr': 5, 'mon': 5}
         ceph2:
           config:
             ENABLE_LOGS: 1
-            daemon_list: ['mds', 'client', 'osd', 'mgr', 'mon']
-            daemon_dbg_level: {'mds': 20, 'client': 10, 'osd': 5, 'mgr': 5, 'mon': 5}
+            daemon_list: ['mds', 'client', 'mgr', 'mon']
+            daemon_dbg_level: {'mds': 10, 'client': 10, 'mgr': 5, 'mon': 5}
 
+  # Mirror is client.cephfs-mirror — not covered by cephfs_logs_util enable_logs.
+  # exec.py needs cephadm: true so cmds run via "cephadm shell --" on installer
+  # (same path as CephAdm used by enable_logs). Restart so log_to_file takes effect.
   - test:
       abort-on-fail: false
       desc: "Enable cephfs-mirror debug logs"
@@ -176,10 +179,11 @@ tests:
       clusters:
         ceph1:
           config:
+            cephadm: true
             commands:
               - "ceph config set client.cephfs-mirror log_to_file true"
               - "ceph config set client.cephfs-mirror debug_cephfs_mirror 20"
-            sudo: true
+              - "ceph orch restart cephfs-mirror"
   - test:
       abort-on-fail: false
       desc: "Set size limit for log rotation"
