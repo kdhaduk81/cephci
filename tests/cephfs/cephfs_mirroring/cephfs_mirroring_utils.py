@@ -2452,6 +2452,31 @@ class CephfsMirroringUtils(object):
         log.info("FSID '%s' validated for %s", remote_fsid, fs_name)
 
 
+    def get_directory_counters(self, cephfs_mirror_node, fsid, asok_file, fs_name=None):
+        """
+        Get cephfs_mirror_directory perf counters from counter dump.
+        Returns list of entries with labels and counters.
+
+        Args:
+            cephfs_mirror_node: Mirror daemon nodes.
+            fsid (str): Cluster FSID.
+            asok_file (dict): Admin socket file mapping.
+            fs_name (str, optional): Filter by source_filesystem label.
+
+        Returns:
+            list: List of dicts with 'labels' and 'counters' keys.
+        """
+        data = self.get_cephfs_mirror_counters(cephfs_mirror_node, fsid, asok_file)
+        entries = data.get("cephfs_mirror_directory", [])
+        if fs_name:
+            entries = [
+                e
+                for e in entries
+                if e.get("labels", {}).get("source_filesystem") == fs_name
+            ]
+        return entries
+
+
 @retry(CommandFailed, tries=10, delay=30, backoff=1)
 def wait_for_sync_idle(fs_name, fsid, asok_file, filesystem_id, peer_uuid, paths):
     """

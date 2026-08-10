@@ -172,164 +172,176 @@ tests:
         destroy-cluster: false
         module: test_client.py
         name: "configure client"
-  - test:
-      abort-on-fail: false
-      desc: "Configure CephFS Mirroring"
-      clusters:
-        ceph1:
-          config:
-            name: Validate the Synchronisation is successful upon enabling fs mirroring
-      module: cephfs_mirroring.test_cephfs_mirroring_configure_cephfs_mirroring.py
-      name: Validate the Synchronisation is successful upon enabling fs mirroring.
-      polarion-id: "CEPH-83574099"
-  - test:
-      abort-on-fail: false
-      desc: "Configure CephFS Mirroring modification of source and target cluster"
-      clusters:
-        ceph1:
-          config:
-            name: Configure CephFS Mirroring modification of source and target cluster
-      module: cephfs_mirroring.validate_file_dir_stats_modification_on_mirrored_cluster.py
-      name: validate_file_dir_stats_modification_on_mirrored_cluster
-      polarion-id: "CEPH-83575625"
-  - test:
-      abort-on-fail: false
-      desc: "Configure CephFS Mirroring on multiple FS"
-      clusters:
-        ceph1:
-          config:
-            name: Validate the Mirroring is successful upon enabling fs mirroring on multiple FS from source to same destinatio
-      module: cephfs_mirroring.test_cephfs_mirroring_validate_cephfs-mirroring_on_multifs_setup.py
-      name: Validate the Mirroring is successful upon enabling fs mirroring on multiple FS from source to same destination
-      polarion-id: "CEPH-83574107"
-  - test:
-      abort-on-fail: false
-      desc: "modify User caps and validate the mirroring sync."
-      clusters:
-        ceph1:
-          config:
-            name: "modify User caps and validate the mirroring sync."
-      module: cephfs_mirroring.test_cephfs_mirror_auth_caps.py
-      name: modify User caps and validate the mirroring sync.
-      polarion-id: "CEPH-83574109"
-  - test:
-      abort-on-fail: false
-      desc: "Modify the Remote Snap Directories"
-      clusters:
-        ceph1:
-          config:
-            name: Modify the Remote Snap Directories
-      module: cephfs_mirroring.test_cephfs_mirroring_modify_remote_snapshots.py
-      name: Modify the Remote Snap Directories
-      polarion-id: "CEPH-83574120"
-  - test:
-      abort-on-fail: false
-      desc: "Convert single node to HA configuration"
-      clusters:
-        ceph1:
-          config:
-            name: Convert single node to HA configuration
-      module: cephfs_mirroring.test_cephfs_mirror_ha_conversion.py
-      name: Convert single node to HA configuration
-      polarion-id: "CEPH-83575340"
-  - test:
-      abort-on-fail: false
-      desc: "Validate all failure scenarios to disconnect the mirroring"
-      clusters:
-        ceph1:
-          config:
-            name: Validate all failure scenarios to disconnect the mirroring
-      module: cephfs_mirroring.test_cephfs_mirror_disconnect.py
-      name: Validate all failure scenarios to disconnect the mirroring
-      polarion-id: "CEPH-83574100"
-  - test:
-      abort-on-fail: false
-      desc: "Validate multiple snapshots Synchronization on Mirror setup"
-      clusters:
-        ceph1:
-          config:
-            name: Validate multiple snapshots Synchronization on Mirror setup
-      module: cephfs_mirroring.test_cephfs_mirroring_multiple_snapshots.py
-      name: Validate multiple snapshots Synchronization on Mirror setup
-      polarion-id: "CEPH-83580026"
-  - test:
-      abort-on-fail: false
-      desc: "Validate Snapshot Sync status using asok file"
-      clusters:
-        ceph1:
-          config:
-            name: Validate the Synchronisation Status using asok file
-      module: cephfs_mirroring.test_cephfs_mirroring_snap_status_using_asok.py
-      name: Validate the Synchronisation Status using asok file
-      polarion-id: "CEPH-83593134"
-  - test:
-      abort-on-fail: false
-      desc: "Validate snapshot synchronisation using SnapSchedule"
-      clusters:
-        ceph1:
-          config:
-            name: Validate snapshot synchronisation using SnapSchedule
-      module: cephfs_mirroring.test_cephfs_mirroring_with_snap_schedule.py
-      name: Validate snapshot synchronisation using SnapSchedule
-      polarion-id: "CEPH-83598968"
-  - test:
-      abort-on-fail: false
-      desc: "Configure CephFS Mirroring using peer_add"
-      clusters:
-        ceph1:
-          config:
-            name: Validate the Synchronisation is successful upon enabling fs mirroring using peer_add
-      module: cephfs_mirroring.test_cephfs_mirroring_configure_cephfs_mirroring_peer_add.py
-      name: Validate the Synchronisation is successful upon enabling fs mirroring using peer_add.
-      polarion-id: "CEPH-83632297"
-  - test:
-      abort-on-fail: false
-      desc: "empty data queue on source cluster"
-      clusters:
-        ceph1:
-          config:
-            name: empty data queue on source cluster
-      module: cephfs_mirroring.test_cephfs_mirror_multithreaded_empty_dataq_hang.py
-      name: empty data queue on source cluster.
-      polarion-id: "CEPH-83632392"
+
+  # --- Remaining mirroring tests commented out; only stats test enabled ---
+#  - test:
+#      abort-on-fail: false
+#      desc: "Configure CephFS Mirroring"
+#      clusters:
+#        ceph1:
+#          config:
+#            name: Validate the Synchronisation is successful upon enabling fs mirroring
+#      module: cephfs_mirroring.test_cephfs_mirroring_configure_cephfs_mirroring.py
+#      name: Validate the Synchronisation is successful upon enabling fs mirroring.
+#      polarion-id: "CEPH-83574099"
+#  - test:
+#      abort-on-fail: false
+#      desc: "Configure CephFS Mirroring modification of source and target cluster"
+#      clusters:
+#        ceph1:
+#          config:
+#            name: Configure CephFS Mirroring modification of source and target cluster
+#      module: cephfs_mirroring.validate_file_dir_stats_modification_on_mirrored_cluster.py
+#      name: validate_file_dir_stats_modification_on_mirrored_cluster
+#      polarion-id: "CEPH-83575625"
+#  - test:
+#      abort-on-fail: false
+#      desc: "Configure CephFS Mirroring on multiple FS"
+#      clusters:
+#        ceph1:
+#          config:
+#            name: Validate the Mirroring is successful upon enabling fs mirroring on multiple FS from source to same destinatio
+#      module: cephfs_mirroring.test_cephfs_mirroring_validate_cephfs-mirroring_on_multifs_setup.py
+#      name: Validate the Mirroring is successful upon enabling fs mirroring on multiple FS from source to same destination
+#      polarion-id: "CEPH-83574107"
+#  - test:
+#      abort-on-fail: false
+#      desc: "modify User caps and validate the mirroring sync."
+#      clusters:
+#        ceph1:
+#          config:
+#            name: "modify User caps and validate the mirroring sync."
+#      module: cephfs_mirroring.test_cephfs_mirror_auth_caps.py
+#      name: modify User caps and validate the mirroring sync.
+#      polarion-id: "CEPH-83574109"
+#  - test:
+#      abort-on-fail: false
+#      desc: "Modify the Remote Snap Directories"
+#      clusters:
+#        ceph1:
+#          config:
+#            name: Modify the Remote Snap Directories
+#      module: cephfs_mirroring.test_cephfs_mirroring_modify_remote_snapshots.py
+#      name: Modify the Remote Snap Directories
+#      polarion-id: "CEPH-83574120"
+#  - test:
+#      abort-on-fail: false
+#      desc: "Convert single node to HA configuration"
+#      clusters:
+#        ceph1:
+#          config:
+#            name: Convert single node to HA configuration
+#      module: cephfs_mirroring.test_cephfs_mirror_ha_conversion.py
+#      name: Convert single node to HA configuration
+#      polarion-id: "CEPH-83575340"
+#  - test:
+#      abort-on-fail: false
+#      desc: "Validate all failure scenarios to disconnect the mirroring"
+#      clusters:
+#        ceph1:
+#          config:
+#            name: Validate all failure scenarios to disconnect the mirroring
+#      module: cephfs_mirroring.test_cephfs_mirror_disconnect.py
+#      name: Validate all failure scenarios to disconnect the mirroring
+#      polarion-id: "CEPH-83574100"
+#  - test:
+#      abort-on-fail: false
+#      desc: "Validate multiple snapshots Synchronization on Mirror setup"
+#      clusters:
+#        ceph1:
+#          config:
+#            name: Validate multiple snapshots Synchronization on Mirror setup
+#      module: cephfs_mirroring.test_cephfs_mirroring_multiple_snapshots.py
+#      name: Validate multiple snapshots Synchronization on Mirror setup
+#      polarion-id: "CEPH-83580026"
+#  - test:
+#      abort-on-fail: false
+#      desc: "Validate Snapshot Sync status using asok file"
+#      clusters:
+#        ceph1:
+#          config:
+#            name: Validate the Synchronisation Status using asok file
+#      module: cephfs_mirroring.test_cephfs_mirroring_snap_status_using_asok.py
+#      name: Validate the Synchronisation Status using asok file
+#      polarion-id: "CEPH-83593134"
+#  - test:
+#      abort-on-fail: false
+#      desc: "Validate snapshot synchronisation using SnapSchedule"
+#      clusters:
+#        ceph1:
+#          config:
+#            name: Validate snapshot synchronisation using SnapSchedule
+#      module: cephfs_mirroring.test_cephfs_mirroring_with_snap_schedule.py
+#      name: Validate snapshot synchronisation using SnapSchedule
+#      polarion-id: "CEPH-83598968"
+#  - test:
+#      abort-on-fail: false
+#      desc: "Configure CephFS Mirroring using peer_add"
+#      clusters:
+#        ceph1:
+#          config:
+#            name: Validate the Synchronisation is successful upon enabling fs mirroring using peer_add
+#      module: cephfs_mirroring.test_cephfs_mirroring_configure_cephfs_mirroring_peer_add.py
+#      name: Validate the Synchronisation is successful upon enabling fs mirroring using peer_add.
+#      polarion-id: "CEPH-83632297"
+#  - test:
+#      abort-on-fail: false
+#      desc: "empty data queue on source cluster"
+#      clusters:
+#        ceph1:
+#          config:
+#            name: empty data queue on source cluster
+#      module: cephfs_mirroring.test_cephfs_mirror_multithreaded_empty_dataq_hang.py
+#      name: empty data queue on source cluster.
+#      polarion-id: "CEPH-83632392"
+
+#  - test:
+#      abort-on-fail: false
+#      desc: "Test incremental snapshot sync is faster than full sync using git repo diffs"
+#      clusters:
+#        ceph1:
+#          config:
+#            name: Test incremental snapshot synchronization
+#      module: cephfs_mirroring.test_cephfs_mirror_incremental_sync.py
+#      name: Test incremental snapshot synchronization
+#      polarion-id: "CEPH-83632393"
+#  - test:
+#      abort-on-fail: false
+#      desc: "Validate cephfs-mirror daemon status shows correct fsid and mon list"
+#      clusters:
+#        ceph1:
+#          config:
+#            name: Validate daemon status fsid and mon list for cross-cluster and intra-cluster peers
+#      module: cephfs_mirroring.test_cephfs_mirroring_daemon_status_validate_fsid_monlist.py
+#      name: Validate daemon status fsid and mon list for cross-cluster and intra-cluster peers
+#      polarion-id: "CEPH-83632391"
+#  - test:
+#      abort-on-fail: false
+#      desc: "Validate peer removal and re-addition via bootstrap_import resumes sync"
+#      clusters:
+#        ceph1:
+#          config:
+#            name: Validate peer remove and re-add via bootstrap_import
+#      module: cephfs_mirroring.test_cephfs_mirroring_peer_remove_and_readd.py
+#      name: Validate peer remove and re-add via bootstrap_import
+#      polarion-id: "CEPH-83632394"
+#  - test:
+#      abort-on-fail: false
+#      desc: "Validate snapdiff vs blockdiff behavior in cephfs-mirror daemon"
+#      clusters:
+#        ceph1:
+#          config:
+#            name: Validate snapdiff for small files and blockdiff for large files
+#      module: cephfs_mirroring.test_cephfs_mirror_snapdiff_vs_blockdiff.py
+#      name: Validate snapdiff vs blockdiff behavior
+#      polarion-id: "CEPH-83632395"
 
   - test:
       abort-on-fail: false
-      desc: "Test incremental snapshot sync is faster than full sync using git repo diffs"
+      desc: "Validate cephfs-mirror peer and directory perf counters across snap sync/delete/rename"
       clusters:
         ceph1:
           config:
-            name: Test incremental snapshot synchronization
-      module: cephfs_mirroring.test_cephfs_mirror_incremental_sync.py
-      name: Test incremental snapshot synchronization
-      polarion-id: "CEPH-83632393"
-  - test:
-      abort-on-fail: false
-      desc: "Validate cephfs-mirror daemon status shows correct fsid and mon list"
-      clusters:
-        ceph1:
-          config:
-            name: Validate daemon status fsid and mon list for cross-cluster and intra-cluster peers
-      module: cephfs_mirroring.test_cephfs_mirroring_daemon_status_validate_fsid_monlist.py
-      name: Validate daemon status fsid and mon list for cross-cluster and intra-cluster peers
-      polarion-id: "CEPH-83632391"
-  - test:
-      abort-on-fail: false
-      desc: "Validate peer removal and re-addition via bootstrap_import resumes sync"
-      clusters:
-        ceph1:
-          config:
-            name: Validate peer remove and re-add via bootstrap_import
-      module: cephfs_mirroring.test_cephfs_mirroring_peer_remove_and_readd.py
-      name: Validate peer remove and re-add via bootstrap_import
-      polarion-id: "CEPH-83632394"
-  - test:
-      abort-on-fail: false
-      desc: "Validate snapdiff vs blockdiff behavior in cephfs-mirror daemon"
-      clusters:
-        ceph1:
-          config:
-            name: Validate snapdiff for small files and blockdiff for large files
-      module: cephfs_mirroring.test_cephfs_mirror_snapdiff_vs_blockdiff.py
-      name: Validate snapdiff vs blockdiff behavior
-      polarion-id: "CEPH-83632395"
+            name: Validate cephfs-mirror stats counters
+      module: cephfs_mirroring.test_cephfs_mirror_stats.py
+      name: Validate cephfs-mirror stats counters
