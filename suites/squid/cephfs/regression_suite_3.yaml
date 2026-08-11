@@ -2,20 +2,13 @@
 ######################################################################################################################
 # CephFS Regression Suite 3
 #
-# TFA rerun: kept deploy + client config + failed tests only
+# TFA rerun: kept deploy + client config + root_squash + mds/client debug logs
 # Source run: http://10.64.24.74/logs/ceph-qe-logs/IBM/8.1/rhel-9/regression/19.2.1-387/cephfs/21/logs/Regression_Suite_3/
-# Pipeline metadata: metadata/squid/cephfs.yaml (regression)
-# Failed: Validate Root Sqaush operations on Cephfs
+# Follow-up: http://10.64.24.74/logs/ceph-qe-logs/IBM/9.2/rhel-10/executor/20.2.2-214/cephfs/2464/logs/regression_suite_3/
+# Pipeline metadata: metadata/squid/cephfs.yaml (regression) / tentacle executor
+# Failed: Validate Root Sqaush operations on Cephfs (Test 5 kernel path)
 #
-# Tests Covered:
-#     - MDS failover while IO
-#     - MDS Configuration Settings
-#     - multiple clients permission in mounted directory
-#     - mds journal value conf verification
-#     - Validate Root Squash operations on Cephfs
-#     - client_caps_update_validation
-#
-# Instrumentation: debug logs, crash module, log rotation, health checks
+# Active: deploy, clients, enable logs (mds+client), log rotation, root_squash, disable logs
 ######################################################################################################################
 tests:
   - test:
@@ -188,25 +181,25 @@ tests:
       module: test_client.py
       name: "configure client"
   ######################################################################################################################
-  # Instrumentation: Enable debug logs, log rotation, crash module
+  # Instrumentation: MDS + client debug only (needed for root_squash / caps), log rotation
   ######################################################################################################################
-  # - test:
-  #     abort-on-fail: false
-  #     desc: "Enable ceph debug logs"
-  #     module: cephfs_logs_util.py
-  #     name: cephfs-enable-logs
-  #     config:
-  #       ENABLE_LOGS: 1
-  #       daemon_list: ['mds', 'client', 'osd', 'mgr', 'mon']
-  #       daemon_dbg_level: {'mds': 20, 'client': 10, 'osd': 5, 'mgr': 5, 'mon': 5}
-  # - test:
-  #     abort-on-fail: false
-  #     desc: "Set size limit for log rotation"
-  #     name: size limit for log rotation
-  #     module: cephfs_logs_util.py
-  #     config:
-  #       LOG_ROTATE_SIZE: 1
-  #       log_size: '200M'
+  - test:
+      abort-on-fail: false
+      desc: "Enable ceph debug logs"
+      module: cephfs_logs_util.py
+      name: cephfs-enable-logs
+      config:
+        ENABLE_LOGS: 1
+        daemon_list: ['mds', 'client']
+        daemon_dbg_level: {'mds': 20, 'client': 10}
+  - test:
+      abort-on-fail: false
+      desc: "Set size limit for log rotation"
+      name: size limit for log rotation
+      module: cephfs_logs_util.py
+      config:
+        LOG_ROTATE_SIZE: 1
+        log_size: '200M'
   # - test:
   #     abort-on-fail: false
   #     desc: "Setup Crash configuration"
@@ -253,11 +246,11 @@ tests:
   #     module: clients.client_caps_update_validation.py
   #     name: client_caps_update_validation
   #     polarion-id: "CEPH-83597462"
-  # - test:
-  #     abort-on-fail: false
-  #     desc: "Disable ceph debug logs"
-  #     module: cephfs_logs_util.py
-  #     name: cephfs-disable-logs
-  #     config:
-  #       DISABLE_LOGS: 1
-  #       daemon_list: ['mds', 'client', 'osd', 'mgr', 'mon']
+  - test:
+      abort-on-fail: false
+      desc: "Disable ceph debug logs"
+      module: cephfs_logs_util.py
+      name: cephfs-disable-logs
+      config:
+        DISABLE_LOGS: 1
+        daemon_list: ['mds', 'client']
