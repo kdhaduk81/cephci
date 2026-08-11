@@ -1576,9 +1576,11 @@ class CephfsMirroringUtils(object):
         for node_hostname, asok in asok_file.items():
             if not asok[1]:
                 continue
-            command = f"ceph --admin-daemon {asok[1]} counter dump -f json"
+            asok_basename = asok[1].rsplit("/", 1)[-1]
+            asok_dir = f"/var/run/ceph/{fsid}"
             out, _ = asok[0].exec_command(
-                sudo=True, cmd=f"cd /var/run/ceph/{fsid}/ ; {command}"
+                sudo=True,
+                cmd=f"cd {asok_dir} && ceph --admin-daemon {asok_basename} counter dump -f json",
             )
             data = json.loads(out)
             log.info(f"Output of Metrics Report : {data}")
