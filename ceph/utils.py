@@ -507,7 +507,9 @@ def create_onecloud_ceph_nodes(
         node_dict = ceph_cluster.get(node_key)
         role = RolesContainer(node_dict.get("role") or ["pool"])
         # OneCloud API: VM names must be 1-25 chars, alphanumeric + hyphens only
-        node_name = generate_onecloud_node_name(run_id, node_key, role)
+        node_name = generate_onecloud_node_name(
+            run_id, node_key, role, cluster_name=cluster_name
+        )
         virtual_machines.append(
             {
                 "vmname": node_name,
@@ -584,6 +586,35 @@ def create_onecloud_ceph_nodes(
                 image_id,
                 site,
             )
+            continue
+        is_name_conflict = (
+            resp.status_code == 400
+            and "vm name already in use" in err_text
+        )
+        if is_name_conflict:
+            suffix = "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=3))
+            new_run_id = f"{run_id}{suffix}"
+            log.warning(
+                "OneCloud: VM name collision detected, regenerating names with "
+                "run_id suffix '%s'. Response: %s",
+                suffix,
+                resp.text[:500],
+            )
+            new_virtual_machines = []
+            new_node_specs = {}
+            for old_name, spec in node_specs.items():
+                new_name = generate_onecloud_node_name(
+                    new_run_id, spec["node_key"], spec["role"],
+                    cluster_name=cluster_name,
+                )
+                new_virtual_machines.append(
+                    {"vmname": new_name, "vmnotes": f"CephCI node {spec['node_key']}"}
+                )
+                new_node_specs[new_name] = spec
+            virtual_machines = new_virtual_machines
+            node_specs = new_node_specs
+            body["virtualMachines"] = virtual_machines
+            body["name"] = f"{cluster_name}-{_inst_name}-{new_run_id}"[:64]
             continue
         log.error(
             "OneCloud deploy failed. Request body: %s. Response: %s",

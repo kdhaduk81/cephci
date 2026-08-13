@@ -202,7 +202,11 @@ def expand_private_key_path(path: Optional[str]) -> str:
 
 
 def generate_onecloud_node_name(
-    run_id: str, node_key: str, role: Any, max_length: int = 25
+    run_id: str,
+    node_key: str,
+    role: Any,
+    max_length: int = 25,
+    cluster_name: str = "",
 ) -> str:
     """
     Return VM name for OneCloud API (max 25 chars, alphanumeric + hyphens only).
@@ -212,12 +216,18 @@ def generate_onecloud_node_name(
         node_key: Node key (e.g. node1, node2).
         role: RolesContainer with node roles (unused, kept for API compatibility).
         max_length: Max VM name length (OneCloud default 25).
+        cluster_name: Cluster name (e.g. ceph1, ceph2) to disambiguate VMs
+            across multiple clusters sharing the same run_id.
 
     Returns:
-        Name like ci-20DBDH-node1, ci-20DBDH-node2.
+        Name like ci-20DBDH-c1-n1 (with cluster) or ci-20DBDH-node1 (without).
     """
     node_num = "".join(c for c in node_key if c.isdigit()) or "0"
-    name = f"ci-{run_id}-node{node_num}"
+    cluster_suffix = "".join(c for c in cluster_name if c.isdigit())
+    if cluster_suffix:
+        name = f"ci-{run_id}-c{cluster_suffix}-n{node_num}"
+    else:
+        name = f"ci-{run_id}-node{node_num}"
     if len(name) > max_length:
         name = name[:max_length]
     return name
