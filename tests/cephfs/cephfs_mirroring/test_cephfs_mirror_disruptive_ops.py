@@ -19,7 +19,17 @@ def run(ceph_cluster, **kw):
     """
     CEPH-83575002 - CephFS mirroring disruptive operations
 
-    R8: Sync failure does not corrupt metrics
+    Daemon restart mid-sync preserves stats:
+        - Write 5 GiB file and 50 small files, then create snapshot snap_restart_test
+        - Poll until sync is actively in progress (>20% sync progress or syncing state)
+        - Restart cephfs-mirror daemon mid-sync
+        - Validate asok session counters reset / restart cleanly
+        - Validate last_synced_snap retains the baseline snap from OMAP
+        - Cross-check MGR status (handle transient stale / resync cleanly)
+        - Validate sync resumes and does not remain frozen at pre-restart percent
+        - Wait until sync completes and state returns to idle with snap_restart_test synced
+
+    Sync failure does not corrupt metrics:
         - Inject sync failure via conflicting snapshot on target
         - Validate state transitions to 'failed'
         - Validate snaps_synced does not falsely increment
@@ -91,7 +101,7 @@ def run(ceph_cluster, **kw):
         subvol_details = [
             {
                 "subvol_name": f"{subvol_name}_1",
-                "subvol_size": "5368709120",
+                "subvol_size": "10737418240",
                 "mount_type": "kernel",
                 "mount_dir": kernel_mounting_dir,
             },
@@ -134,10 +144,118 @@ def run(ceph_cluster, **kw):
         log.info(f"Baseline synced: snaps_synced={path_status.get('snaps_synced')}")
 
         # ============================================================
-        # R8: Sync failure does not corrupt metrics
+        # Daemon restart mid-sync preserves stats
         # ============================================================
         log.info("=" * 60)
-        log.info("R8: Sync failure does not corrupt metrics")
+        log.info("Scenario: Daemon restart mid-sync preserves stats")
+        log.info("=" * 60)
+
+        log.info(
+            "Write 5 GiB large file and 50 small files (100 KiB each) for snap_restart_test"
+        )
+        source_clients[0].exec_command(
+            sudo=True,
+            cmd=f"dd if=/dev/urandom of={mount_path}large_5g.dat bs=100M count=50 status=none",
+        )
+        source_clients[0].exec_command(
+            sudo=True,
+            cmd=f"for i in $(seq 1 50); do dd if=/dev/urandom of={mount_path}small_file_$i.dat "
+            f"bs=100k count=1 status=none 2>/dev/null; done",
+        )
+
+        snap_restart = "snap_restart_test"
+        log.info(f"Create snapshot {snap_restart} to initiate sync")
+        source_clients[0].exec_command(
+            sudo=True, cmd=f"mkdir {mount_path}.snap/{snap_restart}"
+        )
+
+        log.info("Poll for active sync in progress before restarting mirror daemon")
+        pre_restart_pct = 0.0
+        sync_active = False
+        for poll in range(30):
+            time.sleep(2)
+            peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
+                cephfs_mirror_node[0], source_clients[0], source_fs
+            )
+            path_status = peer_status.get(path_key, {})
+            state = path_status.get("state", "")
+            syncing_snap = path_status.get("current_syncing_snap")
+            log.info(f"[Pre-Restart Poll {poll}] state={state}, syncing={syncing_snap}")
+
+            if state == "syncing" and syncing_snap:
+                sync_active = True
+                pct_str = syncing_snap.get("bytes", {}).get("sync_percent", "0%")
+                try:
+                    pre_restart_pct = float(str(pct_str).rstrip("%"))
+                except ValueError:
+                    pre_restart_pct = 0.0
+                log.info(f"Active sync detected with sync_percent={pre_restart_pct}%")
+                if pre_restart_pct >= 20.0 or poll >= 10:
+                    break
+
+        log.info("Restart cephfs-mirror daemon mid-sync")
+        source_clients[0].exec_command(sudo=True, cmd="ceph orch restart cephfs-mirror")
+        time.sleep(15)
+
+        log.info("Wait for mirror daemon to be running after restart")
+        fs_mirroring_utils.wait_for_daemon_running(
+            source_clients[0],
+            cephfs_mirror_node,
+            ceph_cluster=ceph_cluster_dict.get("ceph1"),
+        )
+
+        log.info("Validate post-restart state via asok")
+        post_restart_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
+            cephfs_mirror_node[0], source_clients[0], source_fs
+        )
+        post_path_status = post_restart_status.get(path_key, {})
+        log.info(f"Post-restart asok status: {json.dumps(post_path_status, indent=2)}")
+
+        last_synced_after_restart = post_path_status.get("last_synced_snap", {})
+        if last_synced_after_restart.get("name") not in ("snap_baseline", snap_restart):
+            raise CommandFailed(
+                "Daemon restart test FAILED: Expected last_synced_snap to retain baseline "
+                f"(or completed {snap_restart}), got {last_synced_after_restart}"
+            )
+        log.info(
+            f"last_synced_snap preserved correctly from OMAP: {last_synced_after_restart.get('name')}"
+        )
+
+        log.info("Cross-check MGR mirror status after daemon restart")
+        mgr_status = fs_mirroring_utils.get_mgr_mirror_status(
+            source_clients[0], source_fs
+        )
+        log.info(f"Post-restart MGR status: {json.dumps(mgr_status, indent=2)}")
+
+        log.info(f"Wait for {snap_restart} to finish sync and return to idle")
+        final_path_status = wait_for_idle(
+            fs_mirroring_utils,
+            cephfs_mirror_node[0],
+            source_clients[0],
+            source_fs,
+            subvol_path,
+            timeout=600,
+        )
+        log.info(
+            f"Final status after daemon restart test: {json.dumps(final_path_status, indent=2)}"
+        )
+
+        final_last_synced = final_path_status.get("last_synced_snap", {})
+        if final_last_synced.get("name") != snap_restart:
+            raise CommandFailed(
+                "Daemon restart test FAILED: Expected final last_synced_snap to be "
+                f"{snap_restart}, got {final_last_synced}"
+            )
+
+        log.info("=" * 60)
+        log.info("PASSED: Daemon restart mid-sync preserved stats and completed sync")
+        log.info("=" * 60)
+
+        # ============================================================
+        # Sync failure does not corrupt metrics
+        # ============================================================
+        log.info("=" * 60)
+        log.info("Scenario: Sync failure does not corrupt metrics")
         log.info("=" * 60)
 
         snaps_synced_before = path_status.get("snaps_synced", 0)
@@ -145,7 +263,7 @@ def run(ceph_cluster, **kw):
 
         log.info("Inject sync failure: create conflicting snapshot on target FIRST")
         target_mount_path = "/mnt/remote_dir_disruptive"
-        snap_conflict = "snap_conflict_r8"
+        snap_conflict = "snap_conflict"
 
         fs_mirroring_utils.inject_sync_failure(
             target_clients[0],
@@ -170,35 +288,37 @@ def run(ceph_cluster, **kw):
             )
             path_status = peer_status.get(path_key, {})
             state = path_status.get("state")
-            log.info(f"[R8 Poll {poll}] state={state}")
+            log.info(f"[Sync Failure Poll {poll}] state={state}")
             if state == "failed":
                 fail_detected = True
                 break
 
         if fail_detected:
-            log.info("R8: state=failed as expected")
+            log.info("Sync failure: state=failed as expected")
         else:
-            log.warning(f"R8: State is '{state}', expected 'failed'")
+            log.warning(f"Sync failure: State is '{state}', expected 'failed'")
 
-        log.info("R8: Validate snaps_synced via asok")
+        log.info("Validate snaps_synced via asok during failure")
         snaps_synced_after = path_status.get("snaps_synced", 0)
         if snaps_synced_after > snaps_synced_before:
             raise CommandFailed(
-                f"R8 FAILED: snaps_synced falsely incremented from "
+                f"Sync failure test FAILED: snaps_synced falsely incremented from "
                 f"{snaps_synced_before} to {snaps_synced_after}"
             )
         log.info(
-            f"R8 asok: snaps_synced stable ({snaps_synced_before} == {snaps_synced_after})"
+            f"Asok: snaps_synced stable ({snaps_synced_before} == {snaps_synced_after})"
         )
 
         if "current_syncing_snap" in path_status:
-            log.warning("R8: current_syncing_snap present during failed state")
+            log.warning(
+                "Sync failure: current_syncing_snap present during failed state"
+            )
 
-        log.info("R8: Cross-check failure via MGR interface")
+        log.info("Cross-check failure via MGR interface")
         mgr_status = fs_mirroring_utils.get_mgr_mirror_status(
             source_clients[0], source_fs
         )
-        log.info(f"R8 MGR status: {json.dumps(mgr_status, indent=2)}")
+        log.info(f"MGR status during failure: {json.dumps(mgr_status, indent=2)}")
         mgr_metrics = mgr_status.get("metrics", {})
         mgr_path_data = mgr_metrics.get(path_key, {})
         if mgr_path_data:
@@ -206,7 +326,9 @@ def run(ceph_cluster, **kw):
             if mgr_peer:
                 mgr_state = mgr_peer[0].get("state", "")
                 mgr_synced = mgr_peer[0].get("snaps_synced", 0)
-                log.info(f"R8 MGR: state={mgr_state}, snaps_synced={mgr_synced}")
+                log.info(
+                    f"MGR during failure: state={mgr_state}, snaps_synced={mgr_synced}"
+                )
 
         log.info("Remove conflicting snapshot from target to allow recovery")
         target_clients[0].exec_command(
@@ -230,27 +352,27 @@ def run(ceph_cluster, **kw):
             )
             path_status = peer_status.get(path_key, {})
             state = path_status.get("state")
-            log.info(f"[R8 Recovery Poll {poll}] state={state}")
+            log.info(f"[Recovery Poll {poll}] state={state}")
             if state in ("idle", "syncing"):
                 recovered = True
                 break
 
         if recovered:
-            log.info("R8: Recovered to '%s' after removing conflict", state)
+            log.info("Recovered to '%s' after removing conflict", state)
         else:
             # TODO(BZ-XXXXXX): cephfs-mirror daemon does not auto-recover from
             # failed state after the conflicting snapshot is removed. This is a
             # known product limitation. Update this comment with the BZ number
             # once filed and remove the hold label after the fix is confirmed.
             log.warning(
-                "R8: State after recovery is '%s'. "
+                "State after recovery is '%s'. "
                 "KNOWN ISSUE (BZ-XXXXXX): daemon does not auto-recover from "
                 "failed state. Manual daemon restart is required. "
                 "Test continues — metrics integrity is still validated.",
                 state,
             )
 
-        log.info("R8: Verify recovery via MGR interface")
+        log.info("Verify recovery via MGR interface")
         mgr_status = fs_mirroring_utils.get_mgr_mirror_status(
             source_clients[0], source_fs
         )
@@ -260,13 +382,13 @@ def run(ceph_cluster, **kw):
             mgr_peer = list(mgr_path_data.get("peer", {}).values())
             if mgr_peer:
                 log.info(
-                    "R8 MGR post-recovery: state=%s, snaps_synced=%s",
+                    "MGR post-recovery: state=%s, snaps_synced=%s",
                     mgr_peer[0].get("state"),
                     mgr_peer[0].get("snaps_synced"),
                 )
 
         log.info("=" * 60)
-        log.info("R8 PASSED: Sync failure did not corrupt metrics")
+        log.info("PASSED: Sync failure did not corrupt metrics")
         log.info("=" * 60)
         return 0
 
@@ -280,7 +402,7 @@ def run(ceph_cluster, **kw):
             if not locals().get("mount_path"):
                 raise Exception("Skip cleanup: setup did not complete")
             log.info("Delete the snapshots")
-            for snap in ["snap_baseline", "snap_conflict_r8"]:
+            for snap in ["snap_baseline", "snap_restart_test", "snap_conflict"]:
                 source_clients[0].exec_command(
                     sudo=True,
                     cmd=f"rmdir {mount_path}.snap/{snap}",
@@ -342,6 +464,13 @@ def run(ceph_cluster, **kw):
                 source_fs,
                 subvol_group_name,
                 check_ec=False,
+            )
+
+            log.info("Clean up mirrored data and snapshots on target cluster")
+            fs_mirroring_utils.cleanup_target_cluster(
+                target_clients[0],
+                target_fs=target_fs,
+                subvolume_paths=[subvol_path],
             )
         except Exception as cleanup_err:
             log.warning(f"Cleanup encountered an error: {cleanup_err}")

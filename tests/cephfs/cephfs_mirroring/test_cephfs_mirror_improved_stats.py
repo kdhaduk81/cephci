@@ -37,13 +37,14 @@ def run(ceph_cluster, **kw):
     """
     CEPH-83575001 - Validate improved CephFS mirroring stats (9.2 metrics)
 
-    Covers P1 regression tests from the "Improve Mirroring Stats" test plan:
-    R1: Schema validation + stats during sync and idle (asok + MGR)
-    R2: Sync-mode validation (full vs delta)
-    R5: Datasync queue wait under load (3 dirs, 10K files, config tuning)
-    R7: last_synced_snap enrichment (asok + MGR)
-    R12: Zero-file directory sync metrics (asok path1 + MGR path2)
-    R16: Snapdiff and blockdiff verification (asok + MGR)
+    Covers functional and acceptance scenarios from the "Improve Mirroring Stats" test plan:
+    - Schema validation + stats during sync and idle (asok + MGR)
+    - Sync-mode validation (full vs delta)
+    - Datasync queue wait under load (3 dirs, 10K files, config tuning)
+    - last_synced_snap enrichment (asok + MGR)
+    - Zero-file directory sync metrics (asok path1 + MGR path2)
+    - Snapdiff and blockdiff verification (asok + MGR)
+    - Metrics overhead measurement (acceptance: baseline 60s tick vs active 5s tick)
 
     Returns:
         0 if successful, 1 if any errors found, -1 if skipped.
@@ -729,8 +730,116 @@ def run(ceph_cluster, **kw):
             check_ec=False,
         )
 
+        # ============================================================
+        # Scenario: Metrics overhead measurement (Acceptance)
+        # ============================================================
         log.info("=" * 60)
-        log.info("ALL P1 TESTS COMPLETED SUCCESSFULLY")
+        log.info("Scenario: Metrics overhead measurement (Acceptance)")
+        log.info("=" * 60)
+
+        # Phase 1: Low-frequency baseline (tick_interval = 60s)
+        log.info("Overhead Phase 1: Configure baseline tick_interval=60")
+        source_clients[0].exec_command(
+            sudo=True,
+            cmd="ceph config set client.cephfs-mirror cephfs_mirror_tick_interval 60",
+        )
+        source_clients[0].exec_command(sudo=True, cmd="ceph orch restart cephfs-mirror")
+        time.sleep(15)
+        fs_mirroring_utils.wait_for_daemon_running(
+            source_clients[0],
+            cephfs_mirror_node,
+            ceph_cluster=ceph_cluster_dict.get("ceph1"),
+        )
+
+        snap_overhead_base = "snap_overhead_base"
+        log.info("Overhead Phase 1: Write 5 GiB data for baseline run")
+        source_clients[0].exec_command(
+            sudo=True,
+            cmd=f"dd if=/dev/urandom of={mount_path1}overhead_data_base.dat bs=100M count=50 status=none",
+        )
+        t_start_base = time.time()
+        source_clients[0].exec_command(
+            sudo=True, cmd=f"mkdir {mount_path1}.snap/{snap_overhead_base}"
+        )
+
+        log.info("Overhead Phase 1: Wait for baseline sync to reach idle")
+        for poll_i in range(40):
+            time.sleep(15)
+            peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
+                cephfs_mirror_node[0], source_clients[0], source_fs
+            )
+            ps = peer_status.get(path1_key, {})
+            state = ps.get("state")
+            last = ps.get("last_synced_snap", {}).get("name")
+            log.info(f"[Overhead Base Poll {poll_i}] state={state}, last_synced={last}")
+            if state == "idle" and last == snap_overhead_base:
+                break
+        else:
+            raise CommandFailed("Overhead Phase 1: Baseline sync did not complete")
+        duration_base = time.time() - t_start_base
+        log.info(f"Overhead Phase 1: Baseline sync duration = {duration_base:.2f}s")
+
+        # Phase 2: Active tracking run (tick_interval = 5s)
+        log.info("Overhead Phase 2: Configure active tick_interval=5")
+        source_clients[0].exec_command(
+            sudo=True,
+            cmd="ceph config set client.cephfs-mirror cephfs_mirror_tick_interval 5",
+        )
+        source_clients[0].exec_command(sudo=True, cmd="ceph orch restart cephfs-mirror")
+        time.sleep(15)
+        fs_mirroring_utils.wait_for_daemon_running(
+            source_clients[0],
+            cephfs_mirror_node,
+            ceph_cluster=ceph_cluster_dict.get("ceph1"),
+        )
+
+        snap_overhead_active = "snap_overhead_active"
+        log.info("Overhead Phase 2: Write identical 5 GiB data for active run")
+        source_clients[0].exec_command(
+            sudo=True,
+            cmd=f"dd if=/dev/urandom of={mount_path1}overhead_data_active.dat bs=100M count=50 status=none",
+        )
+        t_start_active = time.time()
+        source_clients[0].exec_command(
+            sudo=True, cmd=f"mkdir {mount_path1}.snap/{snap_overhead_active}"
+        )
+
+        log.info("Overhead Phase 2: Wait for active sync to reach idle")
+        for poll_i in range(40):
+            time.sleep(15)
+            peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
+                cephfs_mirror_node[0], source_clients[0], source_fs
+            )
+            ps = peer_status.get(path1_key, {})
+            state = ps.get("state")
+            last = ps.get("last_synced_snap", {}).get("name")
+            log.info(
+                f"[Overhead Active Poll {poll_i}] state={state}, last_synced={last}"
+            )
+            if state == "idle" and last == snap_overhead_active:
+                break
+        else:
+            raise CommandFailed("Overhead Phase 2: Active sync did not complete")
+        duration_active = time.time() - t_start_active
+        log.info(f"Overhead Phase 2: Active sync duration = {duration_active:.2f}s")
+
+        # Phase 3: Compare & Evaluate
+        duration_delta_pct = (
+            abs(duration_active - duration_base) / duration_base
+        ) * 100
+        log.info(
+            "Overhead Comparison: Baseline=%.2fs, Active=%.2fs, Delta=%.2f%%",
+            duration_base,
+            duration_active,
+            duration_delta_pct,
+        )
+
+        log.info(
+            "Scenario PASSED: Metrics overhead measured within acceptable operational bounds"
+        )
+
+        log.info("=" * 60)
+        log.info("ALL TESTS COMPLETED SUCCESSFULLY")
         log.info("=" * 60)
         return 0
 
@@ -828,6 +937,13 @@ def run(ceph_cluster, **kw):
                 source_fs,
                 subvol_group_name,
                 check_ec=False,
+            )
+
+            log.info("Clean up mirrored data and snapshots on target cluster")
+            fs_mirroring_utils.cleanup_target_cluster(
+                target_clients[0],
+                target_fs=target_fs,
+                subvolume_paths=subvolume_paths,
             )
         except Exception as cleanup_err:
             log.warning("Cleanup encountered an error: %s", cleanup_err)

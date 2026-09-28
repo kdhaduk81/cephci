@@ -1437,6 +1437,81 @@ class CephfsMirroringUtils(object):
         except Exception as e:
             log.error(f"Error during cleanup: {str(e)}")
 
+    def cleanup_target_cluster(
+        self,
+        target_client,
+        target_fs="cephfs",
+        target_mount_dir=None,
+        subvolume_paths=None,
+    ):
+        """
+        Clean up mirrored data, snapshots, and temporary mounts on the target cluster.
+
+        Args:
+            target_client: Client node object on target (ceph2).
+            target_fs (str): Target filesystem name.
+            target_mount_dir (str, optional): Target mount directory if mounted during test.
+            subvolume_paths (list, optional): List of mirrored subvolume/directory paths.
+        """
+        try:
+            log.info("Starting cleanup on target cluster")
+
+            # 1. Unmount and clean up any target client mount directory if passed
+            if target_mount_dir:
+                self.cleanup_target_client(target_client, target_mount_dir)
+
+            # 2. If subvolume paths provided, mount root of target_fs temporarily and delete mirrored data
+            if subvolume_paths:
+                tmp_target_mount = f"/mnt/target_cleanup_{int(time.time())}"
+                log.info(
+                    "Mounting target filesystem to clean up synced data: %s",
+                    tmp_target_mount,
+                )
+                target_client.exec_command(
+                    sudo=True, cmd=f"mkdir -p {tmp_target_mount}", check_ec=False
+                )
+                mount_cmd = (
+                    f"mount -t ceph :{target_fs} {tmp_target_mount} "
+                    f"-o name=admin,fs={target_fs}"
+                )
+                _, err = target_client.exec_command(
+                    sudo=True, cmd=mount_cmd, check_ec=False
+                )
+                if not err or "mounted" in err or "already mounted" in err:
+                    for sv_path in subvolume_paths:
+                        sv_target_full = f"{tmp_target_mount}{sv_path}"
+                        log.info(
+                            "Cleaning up snapshots and data on target for: %s",
+                            sv_target_full,
+                        )
+                        # Remove snapshots on target subvolume first
+                        target_client.exec_command(
+                            sudo=True,
+                            cmd=f"for s in $(ls {sv_target_full}.snap/ 2>/dev/null); do "
+                            f"rmdir {sv_target_full}.snap/$s; done",
+                            check_ec=False,
+                        )
+                        # Clean up regular mirrored files/directories
+                        target_client.exec_command(
+                            sudo=True,
+                            cmd=f"rm -rf {sv_target_full}/*",
+                            check_ec=False,
+                        )
+                    # Unmount and delete temporary mount point
+                    target_client.exec_command(
+                        sudo=True, cmd=f"umount -l {tmp_target_mount}", check_ec=False
+                    )
+                    target_client.exec_command(
+                        sudo=True, cmd=f"rm -rf {tmp_target_mount}", check_ec=False
+                    )
+                else:
+                    log.warning(
+                        "Could not mount target filesystem for deep cleanup: %s", err
+                    )
+            log.info("Target cluster cleanup completed")
+        except Exception as e:
+            log.warning("Target cluster cleanup encountered an error: %s", e)
+
     def deploy_cephfs_mirroring(
         self,
         source_fs,
@@ -3132,3 +3207,100 @@ def validate_last_synced_snap_schema(last_synced_snap, expected_snap_name=None):
         last_synced_snap.get("sync_bytes"),
     )
     return last_synced_snap
+
+
+# ====================================================================
+# Checkpoint Helper Utilities
+# ====================================================================
+
+
+def checkpoint_add(client, fs_name, path, snap_name, check_ec=True):
+    """
+    Add a checkpoint for a snapshot.
+
+    Args:
+        client: Ceph client object.
+        fs_name (str): Filesystem name.
+        path (str): Subvolume or directory path.
+        snap_name (str): Snapshot name.
+        check_ec (bool): Whether to fail if command returns non-zero.
+
+    Returns:
+        tuple (stdout, stderr) or stdout string.
+    """
+    cmd = f"ceph fs snapshot mirror checkpoint add {fs_name} {path} {snap_name}"
+    out, err = client.exec_command(sudo=True, cmd=cmd, check_ec=check_ec)
+    log.info(
+        f"checkpoint add ({snap_name}): stdout='{out.strip()}', stderr='{err.strip()}'"
+    )
+    return out.strip() if check_ec else (out.strip(), err.strip())
+
+
+def checkpoint_now(client, fs_name, path, check_ec=True):
+    """
+    Create a checkpoint on the latest snapshot (checkpoint now).
+
+    Args:
+        client: Ceph client object.
+        fs_name (str): Filesystem name.
+        path (str): Subvolume or directory path.
+        check_ec (bool): Whether to fail if command returns non-zero.
+
+    Returns:
+        tuple (stdout, stderr) or stdout string.
+    """
+    cmd = f"ceph fs snapshot mirror checkpoint now {fs_name} {path}"
+    out, err = client.exec_command(sudo=True, cmd=cmd, check_ec=check_ec)
+    log.info(f"checkpoint now: stdout='{out.strip()}', stderr='{err.strip()}'")
+    return out.strip() if check_ec else (out.strip(), err.strip())
+
+
+def checkpoint_ls(client, fs_name, path, check_ec=True):
+    """
+    List checkpoints for a path.
+
+    Args:
+        client: Ceph client object.
+        fs_name (str): Filesystem name.
+        path (str): Subvolume or directory path.
+        check_ec (bool): Whether to fail if command returns non-zero.
+
+    Returns:
+        list: List of checkpoint dicts if check_ec=True, else (list/dict, err).
+    """
+    cmd = f"ceph fs snapshot mirror checkpoint ls {fs_name} {path} -f json"
+    out, err = client.exec_command(sudo=True, cmd=cmd, check_ec=check_ec)
+    log.info(
+        f"checkpoint ls raw output: stdout='{out.strip()}', stderr='{err.strip()}'"
+    )
+    if not check_ec:
+        return out.strip(), err.strip()
+    try:
+        data = json.loads(out)
+        if isinstance(data, dict):
+            return data.get("checkpoints", [])
+        return data if isinstance(data, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
+def checkpoint_rm(client, fs_name, path, snap_name, check_ec=True):
+    """
+    Remove a checkpoint for a snapshot.
+
+    Args:
+        client: Ceph client object.
+        fs_name (str): Filesystem name.
+        path (str): Subvolume or directory path.
+        snap_name (str): Snapshot name.
+        check_ec (bool): Whether to fail if command returns non-zero.
+
+    Returns:
+        tuple (stdout, stderr) or stdout string.
+    """
+    cmd = f"ceph fs snapshot mirror checkpoint remove {fs_name} {path} {snap_name}"
+    out, err = client.exec_command(sudo=True, cmd=cmd, check_ec=check_ec)
+    log.info(
+        f"checkpoint remove ({snap_name}): stdout='{out.strip()}', stderr='{err.strip()}'"
+    )
+    return out.strip() if check_ec else (out.strip(), err.strip())
