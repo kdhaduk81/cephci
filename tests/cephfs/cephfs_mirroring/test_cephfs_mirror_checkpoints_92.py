@@ -635,7 +635,12 @@ def run(ceph_cluster, **kw):
             sudo=True, cmd=f"mkdir {mount_path}.snap/snap_dynamic_add"
         )
 
-        log.info("Wait until sync starts and add checkpoint while syncing")
+        log.info("Add checkpoint immediately for snap_dynamic_add and monitor sync lifecycle")
+        checkpoint_add(
+            source_clients[0], source_fs, subvol_path1, "snap_dynamic_add"
+        )
+        log.info("Checkpoint added for snap_dynamic_add")
+
         for poll_i in range(30):
             time.sleep(2)
             peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
@@ -646,10 +651,7 @@ def run(ceph_cluster, **kw):
             syncing = ps.get("current_syncing_snap")
             log.info(f"[Dynamic Add Poll {poll_i}] state={state}, syncing={syncing}")
             if state == "syncing" or syncing:
-                checkpoint_add(
-                    source_clients[0], source_fs, subvol_path1, "snap_dynamic_add"
-                )
-                log.info("Checkpoint added mid-sync for snap_dynamic_add")
+                log.info("Active sync observed for snap_dynamic_add")
                 break
 
         log.info("Wait for snap_dynamic_add sync to finish")

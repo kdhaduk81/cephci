@@ -141,6 +141,7 @@ def run(ceph_cluster, **kw):
             source_fs,
             subvol_path,
             timeout=300,
+            expected_snap_name="snap_baseline",
         )
         log.info(f"Baseline synced: snaps_synced={path_status.get('snaps_synced')}")
 
@@ -206,14 +207,17 @@ def run(ceph_cluster, **kw):
         )
 
         log.info("Validate post-restart state via asok")
-        post_restart_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
-            cephfs_mirror_node[0], source_clients[0], source_fs
-        )
-        post_path_status = post_restart_status.get(path_key, {})
-        log.info(f"Post-restart asok status: {json.dumps(post_path_status, indent=2)}")
-
-        last_synced_after_restart = post_path_status.get("last_synced_snap", {})
-        if last_synced_after_restart.get("name") not in ("snap_baseline", snap_restart):
+        for poll_i in range(12):
+            post_restart_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
+                cephfs_mirror_node[0], source_clients[0], source_fs
+            )
+            post_path_status = post_restart_status.get(path_key, {})
+            log.info(f"[Post-restart Poll {poll_i}] asok status: {json.dumps(post_path_status, indent=2)}")
+            last_synced_after_restart = post_path_status.get("last_synced_snap", {})
+            if last_synced_after_restart.get("name") in ("snap_baseline", snap_restart):
+                break
+            time.sleep(5)
+        else:
             raise CommandFailed(
                 "Daemon restart test FAILED: Expected last_synced_snap to retain baseline "
                 f"(or completed {snap_restart}), got {last_synced_after_restart}"
