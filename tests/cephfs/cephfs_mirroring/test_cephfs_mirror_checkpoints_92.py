@@ -687,6 +687,11 @@ def run(ceph_cluster, **kw):
         log.info("7b. Checkpoint remove during active data sync")
         source_clients[0].exec_command(
             sudo=True,
+            cmd=f"rm -f {mount_path}dynamic_add_data",
+            check_ec=False,
+        )
+        source_clients[0].exec_command(
+            sudo=True,
             cmd=f"dd if=/dev/urandom of={mount_path}dynamic_rm_data bs=100M count=50 status=none",
         )
         source_clients[0].exec_command(
@@ -928,6 +933,7 @@ def run(ceph_cluster, **kw):
                 subvol_path1,
                 sched_val="1m",
                 fs_name=source_fs,
+                check_ec=False,
             )
             snap_util.remove_snap_schedule(
                 source_clients[0],

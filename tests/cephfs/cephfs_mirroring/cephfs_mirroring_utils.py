@@ -798,12 +798,20 @@ class CephfsMirroringUtils(object):
             sudo=True, cmd="ceph fs snapshot mirror daemon status -f json"
         )
         data = json.loads(out)
+        if not data or not isinstance(data, list):
+            raise CommandFailed("Daemon status is empty or invalid JSON")
         filesystem_id = None
-        for filesystem in data[0]["filesystems"]:
-            if filesystem["name"] == fs_name:
-                filesystem_id = filesystem["filesystem_id"]
+        for daemon_entry in data:
+            filesystems = daemon_entry.get("filesystems", [])
+            for filesystem in filesystems:
+                if filesystem.get("name") == fs_name:
+                    filesystem_id = filesystem.get("filesystem_id")
+                    break
+            if filesystem_id is not None:
                 break
         log.info(filesystem_id)
+        if filesystem_id is None:
+            raise CommandFailed(f"Filesystem ID for {fs_name} not found in daemon status")
         return filesystem_id
 
     @retry(CommandFailed, tries=5, delay=60)
@@ -821,13 +829,21 @@ class CephfsMirroringUtils(object):
             sudo=True, cmd="ceph fs snapshot mirror daemon status -f json"
         )
         data = json.loads(out)
+        if not data or not isinstance(data, list):
+            raise CommandFailed("Daemon status is empty or invalid JSON")
         peer_uuid = None
-        for filesystem in data[0]["filesystems"]:
-            if filesystem["name"] == fs_name:
-                peers = filesystem["peers"]
-                for peer in peers:
-                    peer_uuid = peer["uuid"]
+        for daemon_entry in data:
+            filesystems = daemon_entry.get("filesystems", [])
+            for filesystem in filesystems:
+                if filesystem.get("name") == fs_name:
+                    peers = filesystem.get("peers", [])
+                    for peer in peers:
+                        peer_uuid = peer.get("uuid")
+                        break
+                if peer_uuid:
                     break
+            if peer_uuid:
+                break
         log.info(peer_uuid)
         if not peer_uuid:
             raise CommandFailed("Peer uuid not created yet")
@@ -847,35 +863,41 @@ class CephfsMirroringUtils(object):
         asok_files = {}
         if not isinstance(daemon_names, list):
             daemon_names = [daemon_names]
-        for daemon_name in daemon_names:
-            cmd = f"cd /var/run/ceph/{fsid}/ ; ls -1tr ceph-client.{daemon_name}* | head -n 1 | tr -d '\\n'"
-            if isinstance(cephfs_mirror_node, list):
-                for node in cephfs_mirror_node:
-                    file = node.exec_command(sudo=True, cmd=cmd)
+        try:
+            return self.get_asok_file_with_connectivity_check(
+                cephfs_mirror_node, fsid, daemon_names
+            )
+        except Exception as e:
+            log.warning("get_asok_file fallback due to: %s", e)
+            for daemon_name in daemon_names:
+                cmd = f"cd /var/run/ceph/{fsid}/ ; ls -1tr ceph-client.{daemon_name}* | tail -n 1 | tr -d '\\n'"
+                if isinstance(cephfs_mirror_node, list):
+                    for node in cephfs_mirror_node:
+                        file = node.exec_command(sudo=True, cmd=cmd)
+                        asok_file = file[0].replace("\\n", "")
+                        if asok_file:
+                            hostname = (
+                                node.node.hostname
+                                if hasattr(node, "node")
+                                else node.hostname
+                            )
+                            asok_files[hostname] = [node, asok_file]
+                        log.info(asok_file)
+                else:
+                    file = cephfs_mirror_node.exec_command(sudo=True, cmd=cmd)
                     asok_file = file[0].replace("\\n", "")
                     if asok_file:
                         hostname = (
-                            node.node.hostname
-                            if hasattr(node, "node")
-                            else node.hostname
+                            cephfs_mirror_node.node.hostname
+                            if hasattr(cephfs_mirror_node, "node")
+                            else cephfs_mirror_node.hostname
                         )
-                        asok_files[hostname] = [node, asok_file]
+                        asok_files[hostname] = [
+                            cephfs_mirror_node,
+                            asok_file,
+                        ]
                     log.info(asok_file)
-            else:
-                file = cephfs_mirror_node.exec_command(sudo=True, cmd=cmd)
-                asok_file = file[0].replace("\\n", "")
-                if asok_file:
-                    hostname = (
-                        cephfs_mirror_node.node.hostname
-                        if hasattr(cephfs_mirror_node, "node")
-                        else cephfs_mirror_node.hostname
-                    )
-                    asok_files[hostname] = [
-                        cephfs_mirror_node,
-                        asok_file,
-                    ]
-                log.info(asok_file)
-        return asok_files
+            return asok_files
 
     def get_asok_file_with_connectivity_check(
         self, cephfs_mirror_node, fsid, daemon_names
@@ -934,7 +956,8 @@ class CephfsMirroringUtils(object):
                 asok_basename = asok_file_path.rsplit("/", 1)[-1]
                 test_cmd = f"cd {asok_dir} && ceph --admin-daemon {asok_basename} help"
                 out, err = node.exec_command(sudo=True, cmd=test_cmd, check_ec=False)
-                if out and "fs mirror peer status" in out:
+                # Socket is considered reachable if 'help' succeeds and returns daemon commands
+                if out and ("fs mirror" in out or "counter dump" in out or "version" in out or "help" in out):
                     hostname = getattr(
                         getattr(node, "node", node), "hostname", str(node)
                     )
@@ -942,7 +965,7 @@ class CephfsMirroringUtils(object):
                     log.info("Connected to asok: %s on %s", asok_file_path, hostname)
                     break
                 else:
-                    log.warning("Cannot reach asok %s: %s", asok_file_path, err)
+                    log.warning("Cannot reach asok %s: %s (err: %s)", asok_file_path, out, err)
 
         if not accessible_asok_files:
             log.warning("No accessible asok files found")
@@ -2968,6 +2991,7 @@ def wait_for_idle(
     path,
     timeout=300,
     interval=15,
+    expected_snap_name=None,
 ):
     """Poll asok peer status until path reaches idle state or timeout.
 
@@ -2981,6 +3005,8 @@ def wait_for_idle(
         path (str): Subvolume path to monitor.
         timeout (int): Maximum seconds to wait (default 300).
         interval (int): Poll interval in seconds (default 15).
+        expected_snap_name (str, optional): If provided, requires idle state
+            AND last_synced_snap name matching this snapshot.
 
     Returns:
         dict: Path status at idle state.
@@ -2997,16 +3023,24 @@ def wait_for_idle(
             )
             path_status = peer_status.get(path_key, {})
             state = path_status.get("state", "unknown")
+            last_snap_name = path_status.get("last_synced_snap", {}).get("name")
             log.info(
-                "[wait_for_idle %ds/%ds] path=%s state=%s snaps_synced=%s",
+                "[wait_for_idle %ds/%ds] path=%s state=%s snaps_synced=%s last_synced=%s",
                 elapsed,
                 timeout,
                 path_key,
                 state,
                 path_status.get("snaps_synced"),
+                last_snap_name,
             )
             if state == "idle":
-                return path_status
+                if expected_snap_name is None or last_snap_name == expected_snap_name:
+                    return path_status
+                log.info(
+                    "Path is idle but last_synced_snap is '%s' (waiting for '%s')",
+                    last_snap_name,
+                    expected_snap_name,
+                )
         except Exception as e:
             log.warning("wait_for_idle poll error (will retry): %s", e)
         time.sleep(interval)

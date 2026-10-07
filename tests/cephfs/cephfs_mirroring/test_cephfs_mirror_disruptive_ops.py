@@ -117,6 +117,7 @@ def run(ceph_cluster, **kw):
         subvol_path = subvolume_paths[0]
         mount_path = f"{kernel_mounting_dir}{subvol_path}"
         path_key = subvol_path.rstrip("/")
+        target_mount_path = None
 
         fs_mirroring_utils.add_path_for_mirroring(
             source_clients[0], source_fs, subvol_path
@@ -235,6 +236,7 @@ def run(ceph_cluster, **kw):
             source_fs,
             subvol_path,
             timeout=600,
+            expected_snap_name=snap_restart,
         )
         log.info(
             f"Final status after daemon restart test: {json.dumps(final_path_status, indent=2)}"
@@ -420,16 +422,17 @@ def run(ceph_cluster, **kw):
             )
 
             log.info("Cleanup target client")
-            target_clients[0].exec_command(
-                sudo=True,
-                cmd=f"umount -l {target_mount_path}",
-                check_ec=False,
-            )
-            target_clients[0].exec_command(
-                sudo=True,
-                cmd=f"rm -rf {target_mount_path}",
-                check_ec=False,
-            )
+            if target_mount_path:
+                target_clients[0].exec_command(
+                    sudo=True,
+                    cmd=f"umount -l {target_mount_path}",
+                    check_ec=False,
+                )
+                target_clients[0].exec_command(
+                    sudo=True,
+                    cmd=f"rm -rf {target_mount_path}",
+                    check_ec=False,
+                )
 
             log.info("Remove paths used for mirroring")
             fs_mirroring_utils.remove_path_from_mirroring(

@@ -401,7 +401,10 @@ def run(ceph_cluster, **kw):
             f"  CONSISTENT: last_synced_snap name matches ({asok_last.get('name')})"
         )
 
-        log.info("Delta sync: write 5 GiB new data for second snapshot")
+        log.info("Delta sync: remove tri_full and write 5 GiB new data for second snapshot")
+        source_clients[0].exec_command(
+            sudo=True, cmd=f"rm -f {mount_path1}tri_full", check_ec=False
+        )
         source_clients[0].exec_command(
             sudo=True,
             cmd=f"dd if=/dev/urandom of={mount_path1}tri_delta bs=1M count=5120",
