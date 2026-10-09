@@ -978,6 +978,66 @@ class FscryptUtils(object):
             return 1
         return 0
 
+    # ALTERNATE NAME XATTR HELPERS #
+    def get_altname_xattr(self, client, file_path):
+        """
+        Read the ceph.alternate_name extended attribute from a file inside an fscrypt-encrypted
+        directory.  The xattr exposes the 'alternate_name' internal CephFS dentry field which,
+        for fscrypt, contains the raw ciphertext of the encrypted filename when the plaintext
+        name exceeds ~134 characters (the encrypted form overflows the 189-char CephFS limit).
+
+        Params:
+            client    - A client object to run ceph cmds
+            file_path - Absolute path of the file to inspect (str)
+
+        Returns:
+            str  - The xattr value string if present, empty string "" if the attribute is not
+                   set (i.e. the filename is short enough that no alternate_name is needed).
+            None - If the command itself fails unexpectedly.
+        """
+        cmd = f"getfattr -n ceph.alternate_name --only-values {file_path}"
+        try:
+            out, _ = client.exec_command(sudo=True, cmd=cmd)
+            return out.strip()
+        except Exception as ex:
+            ex_str = str(ex)
+            # "No such attribute" means the xattr is not set → alternate_name is empty
+            if "No such attribute" in ex_str or "ENODATA" in ex_str:
+                return ""
+            log.error(
+                "Unexpected error reading ceph.alternate_name from %s: %s",
+                file_path,
+                ex_str,
+            )
+            return None
+
+    def set_altname_xattr(self, client, file_path, value):
+        """
+        Set the ceph.alternate_name extended attribute on a file.  This is the admin-facing
+        interface used to copy alternate_name metadata during replication of fscrypt-encrypted
+        subvolumes without requiring the user's encryption key.
+
+        Params:
+            client    - A client object to run ceph cmds
+            file_path - Absolute path of the file to update (str)
+            value     - The alternate_name value to write (str).  For fscrypt this is the
+                        raw ciphertext bytes; pass an empty string "" to clear the attribute.
+
+        Returns:
+            0  - success
+            1  - failure (command failed or value was rejected)
+        """
+        cmd = f"setfattr -n ceph.alternate_name -v '{value}' {file_path}"
+        try:
+            out, _ = client.exec_command(sudo=True, cmd=cmd)
+            log.info(
+                "Set ceph.alternate_name on %s: %s", file_path, out.strip() or "(ok)"
+            )
+            return 0
+        except Exception as ex:
+            log.error("Failed to set ceph.alternate_name on %s: %s", file_path, str(ex))
+            return 1
+
     # HELPER ROUTINES #
     def get_file_list(self, client, path):
         """
