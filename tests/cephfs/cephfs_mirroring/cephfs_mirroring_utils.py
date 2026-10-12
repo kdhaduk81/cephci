@@ -1036,16 +1036,6 @@ class CephfsMirroringUtils(object):
 
         asok_dir = f"/var/run/ceph/{fsid}"
         for node in actual_nodes:
-            try:
-                node.exec_command(
-                    sudo=True, cmd="dnf install -y ceph-common --nogpgcheck"
-                )
-            except CommandFailed as e:
-                log.warning(
-                    "dnf install ceph-common failed on %s (non-fatal): %s",
-                    getattr(getattr(node, "node", node), "hostname", node),
-                    e,
-                )
             file_output, _ = node.exec_command(
                 sudo=True,
                 cmd=f"ls -1tr {asok_dir}/ceph-client.cephfs-mirror.* 2>/dev/null",
@@ -1122,11 +1112,8 @@ class CephfsMirroringUtils(object):
             CommandFailed: If an error occurs during synchronization validation or if the snapshot count doesn't match.
         """
         log.info("Validate the Synchronisation on Target Cluster")
-        log.info("Install ceph-common on cephfs-mirror node")
         if not isinstance(cephfs_mirror_node, list):
             cephfs_mirror_node = [cephfs_mirror_node]
-        for node in cephfs_mirror_node:
-            node.exec_command(sudo=True, cmd="dnf install -y ceph-common --nogpgcheck")
         fsid = self.get_fsid(cephfs_mirror_node[0])
         daemon_names = self.get_daemon_name(source_clients)
         filesystem_id = self.get_filesystem_id_by_name(source_clients, fs_name)
@@ -1190,9 +1177,6 @@ class CephfsMirroringUtils(object):
         filesystem_id = self.get_filesystem_id_by_name(source_clients, fs_name)
         asok_files = self.get_asok_file(cephfs_mirror_node, fsid, daemon_name)
         log.info("Get the details of synced dir from cephfs-mirror status")
-        log.info("Install ceph-common on cephfs-mirror node")
-        for node in cephfs_mirror_node:
-            node.exec_command(sudo=True, cmd="yum install -y ceph-common --nogpgcheck")
         log.info("Get filesystem mirror status")
         for node, asok_file in asok_files.items():
             asok_basename = asok_file[1].rsplit("/", 1)[-1]
@@ -1311,12 +1295,6 @@ class CephfsMirroringUtils(object):
         peer_uuid = self.get_peer_uuid_by_name(self.source_clients[0], fs_name)
         log.info("peer uuid of %s is : %s", fs_name, peer_uuid)
         for node, asok in asok_files.items():
-            try:
-                asok[0].exec_command(
-                    sudo=True, cmd="dnf install -y ceph-common --nogpgcheck"
-                )
-            except CommandFailed as e:
-                log.warning("dnf install ceph-common failed (non-fatal): %s", e)
             asok_basename = asok[1].rsplit("/", 1)[-1]
             asok_dir = f"/var/run/ceph/{fsid}"
             cmd = (
@@ -1731,6 +1709,16 @@ class CephfsMirroringUtils(object):
                 != 0
             ):
                 raise Exception("Peer connection validation failed.")
+
+            # Install ceph-common on cephfs-mirror daemon nodes (needed for asok commands)
+            log.info("Installing ceph-common on cephfs-mirror daemon nodes...")
+            for node in self.source_mirrors:
+                try:
+                    node.exec_command(
+                        sudo=True, cmd="dnf install -y ceph-common --nogpgcheck"
+                    )
+                except Exception as e:
+                    log.warning("Failed to install ceph-common (non-fatal): %s", e)
 
             log.info("CephFS mirroring setup deployed successfully.")
             log.info(token)
@@ -2212,11 +2200,8 @@ class CephfsMirroringUtils(object):
     ):
         """ """
         log.info("Validate the Synchronisation on Target Cluster")
-        log.info("Install ceph-common on cephfs-mirror node")
         if not isinstance(cephfs_mirror_node, list):
             cephfs_mirror_node = [cephfs_mirror_node]
-        for node in cephfs_mirror_node:
-            node.exec_command(sudo=True, cmd="dnf install -y ceph-common --nogpgcheck")
         fsid = self.get_fsid(cephfs_mirror_node[0])
         daemon_names = self.get_daemon_name(source_clients)
         filesystem_id = self.get_filesystem_id_by_name(source_clients, fs_name)
@@ -2253,8 +2238,6 @@ class CephfsMirroringUtils(object):
         """
         if not isinstance(cephfs_mirror_node, list):
             cephfs_mirror_node = [cephfs_mirror_node]
-        for node in cephfs_mirror_node:
-            node.exec_command(sudo=True, cmd="dnf install -y ceph-common --nogpgcheck")
         fsid = self.get_fsid(cephfs_mirror_node[0])
         daemon_names = self.get_daemon_name(source_clients)
         filesystem_id = self.get_filesystem_id_by_name(source_clients, fs_name)
@@ -2777,10 +2760,8 @@ class CephfsMirroringUtils(object):
             int: The 'snaps_synced' value for the specified path if found, or 1 if the path is not found.
         """
         log.info("Get peer mirror status")
-        for node, asok in asok_file.items():
-            asok[0].exec_command(
-                sudo=True, cmd="dnf install -y ceph-common --nogpgcheck"
-            )
+        # Get the last asok entry for the command
+        asok = list(asok_file.values())[-1]
         asok_basename = asok[1].rsplit("/", 1)[-1]
         asok_dir = f"/var/run/ceph/{fsid}"
         cmd = (
@@ -2821,10 +2802,8 @@ class CephfsMirroringUtils(object):
                         or None if the path is not found or no snapshot has been synced yet.
         """
         log.info("Get peer mirror status to retrieve last synced snapshot ID")
-        for node, asok in asok_file.items():
-            asok[0].exec_command(
-                sudo=True, cmd="dnf install -y ceph-common --nogpgcheck"
-            )
+        # Get the last asok entry for the command
+        asok = list(asok_file.values())[-1]
         asok_basename = asok[1].rsplit("/", 1)[-1]
         asok_dir = f"/var/run/ceph/{fsid}"
         cmd = (
@@ -3069,17 +3048,6 @@ class CephfsMirroringUtils(object):
         if path in status:
             return status[path].get("current_syncing_snap")
         return None
-
-
-def _ensure_ceph_common(asok_file):
-    """One-shot helper: install ceph-common on every mirror-daemon node."""
-    for _node, asok in asok_file.items():
-        try:
-            asok[0].exec_command(
-                sudo=True, cmd="dnf install -y ceph-common --nogpgcheck"
-            )
-        except Exception as e:
-            log.warning("dnf install ceph-common failed (non-fatal): %s", e)
 
 
 @retry(CommandFailed, tries=10, delay=30, backoff=1)

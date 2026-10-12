@@ -53,6 +53,9 @@ def run(ceph_cluster, **kw):
         build = config.get("build", config.get("rhbuild"))
         source_clients = ceph_cluster_dict.get("ceph1").get_ceph_objects("client")
         target_clients = ceph_cluster_dict.get("ceph2").get_ceph_objects("client")
+        cephfs_mirror_nodes = ceph_cluster_dict.get("ceph1").get_ceph_objects(
+            "cephfs-mirror"
+        )
 
         # Config parameters with defaults
         source_fs = config.get("source_fs", "cephfs")
@@ -123,6 +126,20 @@ def run(ceph_cluster, **kw):
             log.info("Bootstrap token: %s", token[:50] + "..." if token else "N/A")
         else:
             log.info("CephFS mirroring setup completed (token not returned)")
+
+        # Install ceph-common on cephfs-mirror daemon nodes (needed for asok commands)
+        log.info("Installing ceph-common on cephfs-mirror daemon nodes...")
+        for node in cephfs_mirror_nodes:
+            try:
+                node.exec_command(
+                    sudo=True, cmd="dnf install -y ceph-common --nogpgcheck"
+                )
+                log.info(
+                    "  Installed ceph-common on %s",
+                    getattr(getattr(node, "node", node), "hostname", str(node)),
+                )
+            except Exception as e:
+                log.warning("  Failed to install ceph-common (non-fatal): %s", e)
 
         # Verify setup
         peer_uuid = fs_mirroring_utils.get_peer_uuid_by_name(

@@ -459,8 +459,7 @@ def get_snaps_synced(fs_name, fsid, asok_file, filesystem_id, peer_uuid, path):
         int: The 'snaps_synced' value for the specified path if found, or 1 if the path is not found.
     """
     log.info("Get peer mirror status")
-    for node, asok in asok_file.items():
-        asok[0].exec_command(sudo=True, cmd="dnf install -y ceph-common --nogpgcheck")
+    asok = list(asok_file.values())[-1]
     cmd = (
         f"cd /var/run/ceph/{fsid}/ ; ceph --admin-daemon {asok[1]} fs mirror peer status "
         f"{fs_name}@{filesystem_id} {peer_uuid} -f json"

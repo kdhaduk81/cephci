@@ -231,8 +231,6 @@ def run(ceph_cluster, **kw):
             f"fs mirror peer status "
             f"{source_fs}@{filesystem_id} {peer_uuid} -f json"
         )
-        for node in cephfs_mirror_node:
-            node.exec_command(sudo=True, cmd="dnf install -y ceph-common --nogpgcheck")
         retry_exec_command = retry(CommandFailed, tries=3, delay=30)(
             asok_node.exec_command
         )
