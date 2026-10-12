@@ -763,6 +763,12 @@ def run(ceph_cluster, **kw):
             sudo=True,
             cmd=f"dd if=/dev/urandom of={mount_path1}overhead_data_base.dat bs=100M count=50 status=none",
         )
+        # Remove leftover snap from any previous failed run before creating
+        source_clients[0].exec_command(
+            sudo=True,
+            cmd=f"rmdir {mount_path1}.snap/{snap_overhead_base}",
+            check_ec=False,
+        )
         t_start_base = time.time()
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path1}.snap/{snap_overhead_base}"

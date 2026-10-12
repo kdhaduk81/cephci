@@ -677,9 +677,10 @@ def run(ceph_cluster, **kw):
             )
         time.sleep(10)
 
+        # Write 500 MiB to ensure sync takes long enough to capture sync-mode
         source_clients[0].exec_command(
             sudo=True,
-            cmd="dd if=/dev/urandom of=%sref_file_new bs=1M count=10 "
+            cmd="dd if=/dev/urandom of=%sref_file_new bs=1M count=500 "
             "conv=fdatasync status=none" % mount_path1,
         )
         source_clients[0].exec_command(sudo=True, cmd="sync -f %s" % mount_path1)
@@ -687,16 +688,18 @@ def run(ceph_cluster, **kw):
             sudo=True, cmd="mkdir %s.snap/snap_ref2" % mount_path1
         )
 
+        # Poll immediately with tight 1s interval to catch sync-mode during active sync.
+        # NOTE: The correct field is 'currently_syncing' (not 'current_syncing_snap').
         ref_mode = None
         last_ref2 = {}
-        for poll_i in range(SYNC_POLL_MAX_ITERATIONS):
+        for poll_i in range(300):  # up to 5 minutes at 1s
             try:
                 status = fs_mirroring_utils.get_asok_peer_status_raw(
                     cephfs_mirror_node[0], source_clients[0], source_fs
                 )
                 dir_data = status.get(path1_key, {})
                 state = dir_data.get("state", "")
-                syncing = dir_data.get("current_syncing_snap", {})
+                syncing = dir_data.get("currently_syncing")
                 log.info(
                     "[S5 Poll %d] state=%s, snap=%s, mode=%s",
                     poll_i,
@@ -717,7 +720,7 @@ def run(ceph_cluster, **kw):
                         break
             except Exception as e:
                 log.warning("S5 poll error: %s", e)
-            time.sleep(SYNC_POLL_INTERVAL_SECONDS)
+            time.sleep(1)
 
         fs_mirroring_utils.validate_snapshot_sync_status(
             cephfs_mirror_node[0],

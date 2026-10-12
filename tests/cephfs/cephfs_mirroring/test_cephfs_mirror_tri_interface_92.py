@@ -573,6 +573,10 @@ def run(ceph_cluster, **kw):
         log.info("Scenario 3: Snap lifecycle counters across interfaces")
         log.info("=" * 60)
 
+        # NOTE: S3 uses subvol_tri_1 (mount_path1 / subvol_path1).
+        # subvol_tri_2 (mount_path2) was deliberately put in state=failed by S2
+        # (conflict injection) and may not have recovered yet; using it for a
+        # lifecycle snap would cause validate_snapshot_sync_status to time out.
         status_before = fs_mirroring_utils.get_asok_peer_status_raw(
             cephfs_mirror_node[0], source_clients[0], source_fs
         )
@@ -580,11 +584,11 @@ def run(ceph_cluster, **kw):
 
         source_clients[0].exec_command(
             sudo=True,
-            cmd=f"dd if=/dev/urandom of={mount_path2}lc_file "
+            cmd=f"dd if=/dev/urandom of={mount_path1}lc_file "
             f"bs=1M count=2 conv=fdatasync status=none",
         )
         source_clients[0].exec_command(
-            sudo=True, cmd=f"mkdir {mount_path2}.snap/snap_lc"
+            sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_lc"
         )
         fs_mirroring_utils.validate_snapshot_sync_status(
             cephfs_mirror_node[0],
@@ -598,12 +602,12 @@ def run(ceph_cluster, **kw):
 
         source_clients[0].exec_command(
             sudo=True,
-            cmd=f"mv {mount_path2}.snap/snap_lc {mount_path2}.snap/snap_lc_renamed",
+            cmd=f"mv {mount_path1}.snap/snap_lc {mount_path1}.snap/snap_lc_renamed",
         )
         time.sleep(60)
 
         source_clients[0].exec_command(
-            sudo=True, cmd=f"rmdir {mount_path2}.snap/snap_lc_renamed"
+            sudo=True, cmd=f"rmdir {mount_path1}.snap/snap_lc_renamed"
         )
         time.sleep(60)
 
@@ -611,7 +615,7 @@ def run(ceph_cluster, **kw):
             cephfs_mirror_node[0], source_clients[0], source_fs
         )
         log.info(f"Status after snap lifecycle: {status_after}")
-        path_key = subvol_path2.rstrip("/")
+        path_key = subvol_path1.rstrip("/")
 
         if path_key in status_before and path_key in status_after:
             before_synced = status_before[path_key].get("snaps_synced", 0)

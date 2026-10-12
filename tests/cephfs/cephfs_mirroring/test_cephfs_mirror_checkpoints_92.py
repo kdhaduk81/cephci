@@ -523,6 +523,12 @@ def run(ceph_cluster, **kw):
         source_clients[0].exec_command(
             sudo=True, cmd=f"touch {mount_path}file_dup_test"
         )
+        # Remove leftover snap from any previous failed run before creating
+        source_clients[0].exec_command(
+            sudo=True,
+            cmd=f"rmdir {mount_path}.snap/snap_dup_test",
+            check_ec=False,
+        )
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path}.snap/snap_dup_test"
         )
