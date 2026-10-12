@@ -90,15 +90,18 @@ def run(ceph_cluster, **kw):
         target_user = "mirror_remote"
         target_site_name = "remote_site"
 
-        log.info("Deploy CephFS Mirroring Configuration using peer_bootstrap")
-        fs_mirroring_utils.deploy_cephfs_mirroring(
-            source_fs,
-            source_clients[0],
-            target_fs,
-            target_clients[0],
-            target_user,
-            target_site_name,
+        # Verify mirroring is configured (setup by setup_cephfs_mirroring.py)
+        log.info("Verifying CephFS mirroring is configured...")
+        mirror_check = fs_mirroring_utils.is_mirroring_configured(
+            source_clients[0], source_fs
         )
+        if not mirror_check["configured"]:
+            log.error(
+                "CephFS mirroring is not configured. "
+                "Run setup_cephfs_mirroring.py first."
+            )
+            return 1
+        log.info("Mirroring configured with peer_uuid: %s", mirror_check["peer_uuid"])
 
         log.info("Verify peer addition via peer_list")
         peer_uuid = fs_mirroring_utils.get_peer_uuid_by_name(
@@ -304,15 +307,4 @@ def run(ceph_cluster, **kw):
             except Exception as e:
                 log.warning("Cleanup of intra-cluster FS volumes failed: %s", e)
 
-        log.info("Destroy cross-cluster mirroring for %s -> %s", source_fs, target_fs)
-        try:
-            fs_mirroring_utils.destroy_cephfs_mirroring(
-                source_fs,
-                source_clients[0],
-                target_fs,
-                target_clients[0],
-                target_user,
-                peer_uuid,
-            )
-        except Exception as e:
-            log.warning("Cleanup of cross-cluster mirroring failed: %s", e)
+        # Note: Cross-cluster mirroring teardown is handled by teardown_cephfs_mirroring.py

@@ -70,18 +70,19 @@ def run(ceph_cluster, **kw):
         fs_details_target = fs_util_ceph1.get_fs_info(target_clients[0], target_fs)
         if not fs_details_target:
             fs_util_ceph1.create_fs(target_clients[0], target_fs)
-        target_user = "mirror_remote"
-        target_site_name = "remote_site"
 
-        log.info("Deploy CephFS Mirroring Configuration")
-        fs_mirroring_utils.deploy_cephfs_mirroring(
-            source_fs,
-            source_clients[0],
-            target_fs,
-            target_clients[0],
-            target_user,
-            target_site_name,
+        # Verify mirroring is configured (setup by setup_cephfs_mirroring.py)
+        log.info("Verifying CephFS mirroring is configured...")
+        mirror_check = fs_mirroring_utils.is_mirroring_configured(
+            source_clients[0], source_fs
         )
+        if not mirror_check["configured"]:
+            log.error(
+                "CephFS mirroring is not configured. "
+                "Run setup_cephfs_mirroring.py first."
+            )
+            return 1
+        log.info("Mirroring configured with peer_uuid: %s", mirror_check["peer_uuid"])
 
         log.info("Create Subvolumes for adding Data")
         log.info("Scenario 1 : ")
@@ -341,16 +342,7 @@ def run(ceph_cluster, **kw):
                         source_clients[0], source_fs, path
                     )
 
-            if "peer_uuid" in bound and "target_clients" in bound and target_clients:
-                log.info("Destroy CephFS Mirroring setup.")
-                fs_mirroring_utils.destroy_cephfs_mirroring(
-                    source_fs,
-                    source_clients[0],
-                    target_fs,
-                    target_clients[0],
-                    target_user,
-                    peer_uuid,
-                )
+            # Note: Mirroring teardown is handled by teardown_cephfs_mirroring.py
 
             if "subvolume_list" in bound:
                 log.info("Remove Subvolumes")
