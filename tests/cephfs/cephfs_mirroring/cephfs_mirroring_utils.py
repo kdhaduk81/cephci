@@ -313,6 +313,83 @@ class CephfsMirroringUtils(object):
         log.error("No active MDS found for %s within %ss", filesystem_name, timeout)
         return 1
 
+    def is_mirroring_configured(self, source_client, source_fs):
+        """
+        Check if CephFS mirroring is already configured for the given filesystem.
+
+        This method checks:
+        1. Mirroring module is enabled
+        2. Snapshot mirroring is enabled for the filesystem
+        3. A peer connection exists
+
+        Args:
+            source_client: Client node on source cluster
+            source_fs (str): Name of the source filesystem
+
+        Returns:
+            dict: Contains 'configured' (bool) and 'peer_uuid' (str or None)
+                  {'configured': True, 'peer_uuid': 'xxx'} if fully configured
+                  {'configured': False, 'peer_uuid': None} if not configured
+        """
+        result = {"configured": False, "peer_uuid": None}
+
+        try:
+            # Check if mirroring module is enabled
+            module_status, _ = source_client.exec_command(
+                sudo=True, cmd="ceph mgr module ls --format json-pretty"
+            )
+            module_data = json.loads(module_status)
+            if "mirroring" not in module_data.get("enabled_modules", []):
+                log.info("Mirroring module not enabled")
+                return result
+
+            # Check if snapshot mirroring is enabled for the filesystem
+            mirror_info, _ = source_client.exec_command(
+                sudo=True,
+                cmd=f"ceph fs snapshot mirror show {source_fs} --format json",
+                check_ec=False,
+            )
+            if "not enabled" in mirror_info.lower() or not mirror_info.strip():
+                log.info("Snapshot mirroring not enabled for %s", source_fs)
+                return result
+
+            # Check if peer exists
+            daemon_status, _ = source_client.exec_command(
+                sudo=True,
+                cmd="ceph fs snapshot mirror daemon status -f json",
+                check_ec=False,
+            )
+            if not daemon_status.strip():
+                log.info("No mirror daemon status available")
+                return result
+
+            data = json.loads(daemon_status)
+            if not data or not isinstance(data, list):
+                log.info("Mirror daemon status is empty or invalid")
+                return result
+
+            for daemon_entry in data:
+                filesystems = daemon_entry.get("filesystems", [])
+                for filesystem in filesystems:
+                    if filesystem.get("name") == source_fs:
+                        peers = filesystem.get("peers", [])
+                        if peers:
+                            result["peer_uuid"] = peers[0].get("uuid")
+                            result["configured"] = True
+                            log.info(
+                                "Mirroring is configured for %s (peer_uuid=%s)",
+                                source_fs,
+                                result["peer_uuid"],
+                            )
+                            return result
+
+            log.info("No peer connection found for %s", source_fs)
+            return result
+
+        except Exception as e:
+            log.warning("Error checking mirroring configuration: %s", e)
+            return result
+
     @staticmethod
     def wait_for_daemon_recovery(client, daemon_name, context, timeout=60, interval=5):
         """Wait for a daemon to recover after a disruptive operation.
@@ -748,8 +825,32 @@ class CephfsMirroringUtils(object):
             The specified path should exist within the source filesystem and have been previously added for mirroring.
         """
         source_clients.exec_command(
-            sudo=True, cmd=f"ceph fs snapshot mirror remove {source_fs} {path}"
+            sudo=True,
+            cmd=f"ceph fs snapshot mirror remove {source_fs} {path}",
+            check_ec=False,
         )
+
+    def remove_all_mirror_paths(self, source_clients, source_fs):
+        """
+        Remove all currently tracked mirroring paths from the filesystem.
+        """
+        try:
+            out, _ = source_clients.exec_command(
+                sudo=True,
+                cmd=f"ceph fs snapshot mirror peer_list {source_fs} -f json",
+                check_ec=False,
+            )
+            data = json.loads(out) if out else {}
+            for peer in data.get("peers", []):
+                for path in peer.get("paths", []):
+                    log.info(f"Removing leftover mirror path: {path}")
+                    source_clients.exec_command(
+                        sudo=True,
+                        cmd=f"ceph fs snapshot mirror remove {source_fs} {path}",
+                        check_ec=False,
+                    )
+        except Exception as e:
+            log.warning(f"Failed to remove all mirror paths: {e}")
 
     def get_fsid(self, cephfs_mirror_node):
         """
@@ -811,7 +912,9 @@ class CephfsMirroringUtils(object):
                 break
         log.info(filesystem_id)
         if filesystem_id is None:
-            raise CommandFailed(f"Filesystem ID for {fs_name} not found in daemon status")
+            raise CommandFailed(
+                f"Filesystem ID for {fs_name} not found in daemon status"
+            )
         return filesystem_id
 
     @retry(CommandFailed, tries=5, delay=60)
@@ -957,7 +1060,12 @@ class CephfsMirroringUtils(object):
                 test_cmd = f"cd {asok_dir} && ceph --admin-daemon {asok_basename} help"
                 out, err = node.exec_command(sudo=True, cmd=test_cmd, check_ec=False)
                 # Socket is considered reachable if 'help' succeeds and returns daemon commands
-                if out and ("fs mirror" in out or "counter dump" in out or "version" in out or "help" in out):
+                if out and (
+                    "fs mirror" in out
+                    or "counter dump" in out
+                    or "version" in out
+                    or "help" in out
+                ):
                     hostname = getattr(
                         getattr(node, "node", node), "hostname", str(node)
                     )
@@ -965,7 +1073,9 @@ class CephfsMirroringUtils(object):
                     log.info("Connected to asok: %s on %s", asok_file_path, hostname)
                     break
                 else:
-                    log.warning("Cannot reach asok %s: %s (err: %s)", asok_file_path, out, err)
+                    log.warning(
+                        "Cannot reach asok %s: %s (err: %s)", asok_file_path, out, err
+                    )
 
         if not accessible_asok_files:
             log.warning("No accessible asok files found")
@@ -1543,6 +1653,7 @@ class CephfsMirroringUtils(object):
         target_client,
         target_user,
         target_site_name,
+        skip_if_configured=False,
     ):
         """
         Deploy CephFS mirroring setup between source and target filesystems.
@@ -1554,14 +1665,28 @@ class CephfsMirroringUtils(object):
         - target_client: Client object for the target.
         - target_user (str): User to be authorized for the target filesystem.
         - target_site_name (str): Name of the target site.
+        - skip_if_configured (bool): If True, skip setup if mirroring is already
+          configured. Returns existing peer_uuid in that case. Default: False.
 
         Raises:
         - Exception: If any step fails during the setup process.
 
         Returns :
-            token(type: str) : Token Generated
+            token(type: str) : Token Generated, or None if skipped
         """
         try:
+            # Check if mirroring is already configured and skip if requested
+            if skip_if_configured:
+                check_result = self.is_mirroring_configured(source_client, source_fs)
+                if check_result["configured"]:
+                    log.info(
+                        "Mirroring already configured for %s (peer_uuid=%s), "
+                        "skipping setup (skip_if_configured=True)",
+                        source_fs,
+                        check_result["peer_uuid"],
+                    )
+                    return None  # Return None to indicate setup was skipped
+
             log.info("Enable mirroring module on source")
             if self.enable_mirroring_module(source_client) != 0:
                 raise Exception("Failed to enable mirroring module on Source.")
@@ -1736,7 +1861,14 @@ class CephfsMirroringUtils(object):
             raise
 
     def destroy_cephfs_mirroring(
-        self, source_fs, source_client, target_fs, target_client, target_user, peer_uuid
+        self,
+        source_fs,
+        source_client,
+        target_fs,
+        target_client,
+        target_user,
+        peer_uuid,
+        skip_destroy=False,
     ):
         """
         Destroy CephFS mirroring setup between source and target filesystems.
@@ -1748,10 +1880,24 @@ class CephfsMirroringUtils(object):
         - target_client: Client object for the target.
         - target_user (str): User used for the target filesystem.
         - peer_uuid (str): UUID of the peer connection.
+        - skip_destroy (bool): If True, skip the teardown entirely. Use this when
+          mirroring should persist across multiple tests. Default: False.
 
         Raises:
         - Exception: If any step fails during the teardown process.
+
+        Note:
+            When using skip_if_configured=True in deploy_cephfs_mirroring(),
+            you should also use skip_destroy=True here to keep mirroring
+            persistent across tests for better performance.
         """
+        if skip_destroy:
+            log.info(
+                "Skipping mirroring teardown (skip_destroy=True). "
+                "Peer connection will persist for subsequent tests."
+            )
+            return
+
         try:
             log.info("Remove snapshot mirror peer")
             if not self.remove_snapshot_mirror_peer(
@@ -1905,9 +2051,7 @@ class CephfsMirroringUtils(object):
             asok_basename = asok[1].rsplit("/", 1)[-1]
             asok_dir = f"/var/run/ceph/{fsid}"
             command = f"ceph --admin-daemon {asok_basename} counter dump -f json"
-            out, _ = asok[0].exec_command(
-                sudo=True, cmd=f"cd {asok_dir} && {command}"
-            )
+            out, _ = asok[0].exec_command(sudo=True, cmd=f"cd {asok_dir} && {command}")
             data = json.loads(out)
             log.info(f"Output of Metrics Report : {data}")
             return data
@@ -2985,6 +3129,69 @@ def wait_for_sync_idle(fs_name, fsid, asok_file, filesystem_id, peer_uuid, paths
     log.info("All paths are in idle state")
 
 
+def parse_sync_bytes_to_int(bytes_val):
+    """Parse last_synced_snap.sync_bytes (int or '5.00 GiB' / '0.00 B') to int bytes."""
+    if bytes_val is None:
+        return 0
+    if isinstance(bytes_val, (int, float)):
+        return int(bytes_val)
+    text = str(bytes_val).strip()
+    if not text:
+        return 0
+    units = {
+        "B": 1,
+        "KIB": 1024,
+        "MIB": 1024**2,
+        "GIB": 1024**3,
+        "TIB": 1024**4,
+        "KB": 1000,
+        "MB": 1000**2,
+        "GB": 1000**3,
+    }
+    parts = text.split()
+    try:
+        if len(parts) == 1:
+            return int(float(parts[0]))
+        return int(float(parts[0]) * units.get(parts[1].upper(), 1))
+    except ValueError:
+        return 0
+
+
+def assert_data_snap_counters(path_status, snap_name=None, allow_zero_bytes=False):
+    """Fail unless last_synced counters are populated after a data snapshot.
+
+    Zero sync_bytes / sync_files is only valid for explicit empty-snap cases
+    (allow_zero_bytes=True). snaps_synced must be >= 1 unless allow_zero_bytes.
+    """
+    last = path_status.get("last_synced_snap") or {}
+    snaps_synced = path_status.get("snaps_synced", 0) or 0
+    sync_files = last.get("sync_files", 0) or 0
+    sync_bytes = parse_sync_bytes_to_int(last.get("sync_bytes"))
+    last_name = last.get("name")
+    if snap_name and last_name != snap_name:
+        raise CommandFailed(
+            f"Expected last_synced_snap.name={snap_name}, got {last_name}"
+        )
+    if not allow_zero_bytes:
+        if int(snaps_synced) < 1:
+            raise CommandFailed(
+                f"False-positive guard: snaps_synced={snaps_synced} after data snap "
+                f"{last_name or snap_name}; expected >= 1"
+            )
+        if sync_bytes <= 0 or int(sync_files) < 1:
+            raise CommandFailed(
+                f"False-positive guard: last_synced_snap {last_name} has "
+                f"sync_bytes={last.get('sync_bytes')}, sync_files={sync_files}; "
+                f"data snaps must update both counters"
+            )
+    return {
+        "snaps_synced": int(snaps_synced),
+        "sync_bytes": sync_bytes,
+        "sync_files": int(sync_files),
+        "name": last_name,
+    }
+
+
 def wait_for_idle(
     fs_mirroring_utils,
     cephfs_mirror_node,
@@ -2994,6 +3201,9 @@ def wait_for_idle(
     timeout=300,
     interval=15,
     expected_snap_name=None,
+    require_snaps_synced=None,
+    allow_zero_bytes=False,
+    min_snaps_synced=1,
 ):
     """Poll asok peer status until path reaches idle state or timeout.
 
@@ -3009,6 +3219,12 @@ def wait_for_idle(
         interval (int): Poll interval in seconds (default 15).
         expected_snap_name (str, optional): If provided, requires idle state
             AND last_synced_snap name matching this snapshot.
+        require_snaps_synced (bool, optional): Require snaps_synced >=
+            min_snaps_synced. Defaults to True when expected_snap_name is set
+            and allow_zero_bytes is False.
+        allow_zero_bytes (bool): Permit 0 sync_bytes/sync_files (empty-snap
+            negative cases only).
+        min_snaps_synced (int): Minimum snaps_synced when counters are required.
 
     Returns:
         dict: Path status at idle state.
@@ -3016,38 +3232,86 @@ def wait_for_idle(
     Raises:
         CommandFailed: If path does not reach idle within timeout.
     """
+    if require_snaps_synced is None:
+        require_snaps_synced = expected_snap_name is not None and not allow_zero_bytes
     path_key = path.rstrip("/")
     elapsed = 0
+    last_path_status = {}
     while elapsed < timeout:
         try:
             peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
                 cephfs_mirror_node, source_client, fs_name
             )
             path_status = peer_status.get(path_key, {})
+            last_path_status = path_status
             state = path_status.get("state", "unknown")
-            last_snap_name = path_status.get("last_synced_snap", {}).get("name")
+            last_snap = path_status.get("last_synced_snap") or {}
+            last_snap_name = last_snap.get("name")
+            snaps_synced = path_status.get("snaps_synced")
+            sync_bytes = parse_sync_bytes_to_int(last_snap.get("sync_bytes"))
+            sync_files = last_snap.get("sync_files", 0) or 0
             log.info(
-                "[wait_for_idle %ds/%ds] path=%s state=%s snaps_synced=%s last_synced=%s",
+                "[wait_for_idle %ds/%ds] path=%s state=%s snaps_synced=%s "
+                "last_synced=%s sync_bytes=%s sync_files=%s",
                 elapsed,
                 timeout,
                 path_key,
                 state,
-                path_status.get("snaps_synced"),
+                snaps_synced,
                 last_snap_name,
+                last_snap.get("sync_bytes"),
+                sync_files,
             )
             if state == "idle":
-                if expected_snap_name is None or last_snap_name == expected_snap_name:
+                if (
+                    expected_snap_name is not None
+                    and last_snap_name != expected_snap_name
+                ):
+                    log.info(
+                        "Path is idle but last_synced_snap is '%s' (waiting for '%s')",
+                        last_snap_name,
+                        expected_snap_name,
+                    )
+                elif require_snaps_synced and int(snaps_synced or 0) < min_snaps_synced:
+                    log.info(
+                        "Path is idle for '%s' but snaps_synced=%s < %s — keep waiting",
+                        last_snap_name,
+                        snaps_synced,
+                        min_snaps_synced,
+                    )
+                elif (
+                    require_snaps_synced
+                    and not allow_zero_bytes
+                    and (sync_bytes <= 0 or int(sync_files) < 1)
+                ):
+                    log.info(
+                        "Path is idle for '%s' but last_synced counters are still "
+                        "zero (sync_bytes=%s, sync_files=%s) — keep waiting",
+                        last_snap_name,
+                        last_snap.get("sync_bytes"),
+                        sync_files,
+                    )
+                else:
                     return path_status
-                log.info(
-                    "Path is idle but last_synced_snap is '%s' (waiting for '%s')",
-                    last_snap_name,
-                    expected_snap_name,
-                )
         except Exception as e:
             log.warning("wait_for_idle poll error (will retry): %s", e)
         time.sleep(interval)
         elapsed += interval
-    raise CommandFailed("Path '%s' did not reach idle within %ds" % (path_key, timeout))
+    raise CommandFailed(
+        "Path '%s' did not reach idle with expected counters within %ds "
+        "(last state=%s, snaps_synced=%s, last_synced=%s, sync_bytes=%s, "
+        "sync_files=%s, expected_snap=%s)"
+        % (
+            path_key,
+            timeout,
+            last_path_status.get("state"),
+            last_path_status.get("snaps_synced"),
+            (last_path_status.get("last_synced_snap") or {}).get("name"),
+            (last_path_status.get("last_synced_snap") or {}).get("sync_bytes"),
+            (last_path_status.get("last_synced_snap") or {}).get("sync_files"),
+            expected_snap_name,
+        )
+    )
 
 
 # 9.2 Metrics Schema Constants

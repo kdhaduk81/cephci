@@ -5,7 +5,10 @@ import time
 import traceback
 
 from ceph.ceph import CommandFailed
-from tests.cephfs.cephfs_mirroring.cephfs_mirroring_utils import CephfsMirroringUtils
+from tests.cephfs.cephfs_mirroring.cephfs_mirroring_utils import (
+    CephfsMirroringUtils,
+    assert_data_snap_counters,
+)
 from tests.cephfs.cephfs_utilsV1 import FsUtils
 from utility.log import Log
 
@@ -127,8 +130,6 @@ def run(ceph_cluster, **kw):
 
         source_fs = "cephfs"
         target_fs = "cephfs"
-        target_user = "mirror_remote"
-        target_site_name = "remote_site"
 
         log.info("checking Pre-requisites")
         if not source_clients or not target_clients:
@@ -144,15 +145,18 @@ def run(ceph_cluster, **kw):
         fs_util_ceph1.auth_list(source_clients)
         fs_util_ceph2.auth_list(target_clients)
 
-        log.info("Deploy CephFS Mirroring Configuration")
-        fs_mirroring_utils.deploy_cephfs_mirroring(
-            source_fs,
-            source_clients[0],
-            target_fs,
-            target_clients[0],
-            target_user,
-            target_site_name,
+        # Verify mirroring is configured (setup by setup_cephfs_mirroring.py)
+        log.info("Verifying CephFS mirroring is configured...")
+        mirror_check = fs_mirroring_utils.is_mirroring_configured(
+            source_clients[0], source_fs
         )
+        if not mirror_check["configured"]:
+            log.error(
+                "CephFS mirroring is not configured. "
+                "Run setup_cephfs_mirroring.py first."
+            )
+            return 1
+        log.info("Mirroring configured with peer_uuid: %s", mirror_check["peer_uuid"])
 
         subvol_group_name = "subvolgroup_asok"
         subvol_name = "subvol_asok"
@@ -347,6 +351,12 @@ def run(ceph_cluster, **kw):
             filesystem_id,
             peer_uuid,
         )
+        snap_full_status = fs_mirroring_utils.get_asok_peer_status_raw(
+            cephfs_mirror_node[0], source_clients[0], source_fs
+        )
+        assert_data_snap_counters(
+            snap_full_status.get(path1_key, {}), snap_name="snap_full"
+        )
 
         log.info(
             "S2 Results: sync_mode_full=%s, eta_observed=%s, "
@@ -420,17 +430,24 @@ def run(ceph_cluster, **kw):
             filesystem_id,
             peer_uuid,
         )
+        snap_base_status = fs_mirroring_utils.get_asok_peer_status_raw(
+            cephfs_mirror_node[0], source_clients[0], source_fs
+        )
+        assert_data_snap_counters(
+            snap_base_status.get(path1_key, {}), snap_name="snap_base"
+        )
 
         log.info("Modify 5 of 10 small files + partial write to large file")
         source_clients[0].exec_command(
             sudo=True,
             cmd="for i in $(seq 1 5); do dd if=/dev/urandom "
-            "of=%ssmall_$i bs=1M count=1 conv=notrunc 2>/dev/null; done" % mount_path1,
+            "of=%ssmall_$i bs=1M count=1 conv=notrunc,fdatasync 2>/dev/null; done"
+            % mount_path1,
         )
         source_clients[0].exec_command(
             sudo=True,
             cmd="dd if=/dev/urandom of=%slarge_file "
-            "bs=4K count=1 conv=notrunc seek=100 2>/dev/null" % mount_path1,
+            "bs=4K count=1 conv=notrunc,fdatasync seek=100 2>/dev/null" % mount_path1,
         )
         log.info("Add 20 NEW files (256 MiB each = 5 GiB) for observable delta sync")
         source_clients[0].exec_command(
@@ -439,6 +456,7 @@ def run(ceph_cluster, **kw):
             "of=%sdelta_$i bs=1M count=256 2>/dev/null; done" % mount_path1,
             timeout=600,
         )
+        source_clients[0].exec_command(sudo=True, cmd="sync -f %s" % mount_path1)
         source_clients[0].exec_command(
             sudo=True, cmd="mkdir %s.snap/snap_delta" % mount_path1
         )
@@ -536,6 +554,12 @@ def run(ceph_cluster, **kw):
             asok_file,
             filesystem_id,
             peer_uuid,
+        )
+        snap_delta_status = fs_mirroring_utils.get_asok_peer_status_raw(
+            cephfs_mirror_node[0], source_clients[0], source_fs
+        )
+        assert_data_snap_counters(
+            snap_delta_status.get(path1_key, {}), snap_name="snap_delta"
         )
 
         log.info(
@@ -654,15 +678,18 @@ def run(ceph_cluster, **kw):
         time.sleep(10)
 
         source_clients[0].exec_command(
-            sudo=True, cmd="touch %sref_file_new" % mount_path1
+            sudo=True,
+            cmd="dd if=/dev/urandom of=%sref_file_new bs=1M count=10 "
+            "conv=fdatasync status=none" % mount_path1,
         )
+        source_clients[0].exec_command(sudo=True, cmd="sync -f %s" % mount_path1)
         source_clients[0].exec_command(
             sudo=True, cmd="mkdir %s.snap/snap_ref2" % mount_path1
         )
 
         ref_mode = None
-        for poll_i in range(30):
-            time.sleep(3)
+        last_ref2 = {}
+        for poll_i in range(SYNC_POLL_MAX_ITERATIONS):
             try:
                 status = fs_mirroring_utils.get_asok_peer_status_raw(
                     cephfs_mirror_node[0], source_clients[0], source_fs
@@ -681,15 +708,16 @@ def run(ceph_cluster, **kw):
                     ref_mode = syncing.get("sync-mode", "")
                     log.info("S5: Captured sync-mode=%s", ref_mode)
                     log.info("S5: Full snap details: %s", json.dumps(syncing))
-                    break
+                    if ref_mode:
+                        break
                 if state == "idle":
-                    last = dir_data.get("last_synced_snap", {})
-                    if last.get("name") == "snap_ref2":
-                        ref_mode = "full"
-                        log.info("S5: snap_ref2 synced fast: %s", json.dumps(last))
+                    last_ref2 = dir_data.get("last_synced_snap", {}) or {}
+                    if last_ref2.get("name") == "snap_ref2":
+                        log.info("S5: snap_ref2 idle: %s", json.dumps(last_ref2))
                         break
             except Exception as e:
                 log.warning("S5 poll error: %s", e)
+            time.sleep(SYNC_POLL_INTERVAL_SECONDS)
 
         fs_mirroring_utils.validate_snapshot_sync_status(
             cephfs_mirror_node[0],
@@ -700,11 +728,17 @@ def run(ceph_cluster, **kw):
             filesystem_id,
             peer_uuid,
         )
+        status_ref2 = fs_mirroring_utils.get_asok_peer_status_raw(
+            cephfs_mirror_node[0], source_clients[0], source_fs
+        )
+        assert_data_snap_counters(status_ref2.get(path1_key, {}), snap_name="snap_ref2")
 
-        if ref_mode == "full":
-            log.info("S5 PASSED: Falls back to full sync when ref missing")
-        else:
-            log.warning("S5: sync-mode=%s, expected 'full'", ref_mode)
+        if ref_mode != "full":
+            raise CommandFailed(
+                "S5 FAILED: expected sync-mode=full after snapdiff ref removal, "
+                f"got {ref_mode!r}"
+            )
+        log.info("S5 PASSED: Falls back to full sync when ref missing")
 
         # ============================================================
         # Final: Validate cumulative snaps_synced counters
@@ -1030,18 +1064,7 @@ def run(ceph_cluster, **kw):
                     source_clients[0], source_fs, subvol_path
                 )
 
-            log.info("Destroy CephFS Mirroring setup")
-            peer_uuid = fs_mirroring_utils.get_peer_uuid_by_name(
-                source_clients[0], source_fs
-            )
-            fs_mirroring_utils.destroy_cephfs_mirroring(
-                source_fs,
-                source_clients[0],
-                target_fs,
-                target_clients[0],
-                target_user,
-                peer_uuid,
-            )
+            # Note: Mirroring teardown is handled by teardown_cephfs_mirroring.py
 
             log.info("Remove Subvolumes")
             for sv in subvol_details:

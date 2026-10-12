@@ -6,7 +6,11 @@ import traceback
 from datetime import datetime
 
 from ceph.ceph import CommandFailed
-from tests.cephfs.cephfs_mirroring.cephfs_mirroring_utils import CephfsMirroringUtils
+from tests.cephfs.cephfs_mirroring.cephfs_mirroring_utils import (
+    CephfsMirroringUtils,
+    assert_data_snap_counters,
+    wait_for_idle,
+)
 from tests.cephfs.cephfs_utilsV1 import FsUtils
 from utility.log import Log
 
@@ -83,8 +87,6 @@ def run(ceph_cluster, **kw):
 
         source_fs = "cephfs"
         target_fs = "cephfs"
-        target_user = "mirror_remote"
-        target_site_name = "remote_site"
 
         log.info("checking Pre-requisites")
         if not source_clients or not target_clients:
@@ -100,15 +102,18 @@ def run(ceph_cluster, **kw):
         fs_util_ceph1.auth_list(source_clients)
         fs_util_ceph2.auth_list(target_clients)
 
-        log.info("Deploy CephFS Mirroring Configuration")
-        fs_mirroring_utils.deploy_cephfs_mirroring(
-            source_fs,
-            source_clients[0],
-            target_fs,
-            target_clients[0],
-            target_user,
-            target_site_name,
+        # Verify mirroring is configured (setup by setup_cephfs_mirroring.py)
+        log.info("Verifying CephFS mirroring is configured...")
+        mirror_check = fs_mirroring_utils.is_mirroring_configured(
+            source_clients[0], source_fs
         )
+        if not mirror_check["configured"]:
+            log.error(
+                "CephFS mirroring is not configured. "
+                "Run setup_cephfs_mirroring.py first."
+            )
+            return 1
+        log.info("Mirroring configured with peer_uuid: %s", mirror_check["peer_uuid"])
 
         subvol_group_name = "subvolgroup_mgr"
         subvol_name = "subvol_mgr"
@@ -408,21 +413,17 @@ def run(ceph_cluster, **kw):
 
         log.info("Wait for snap_tick to sync via asok (live, not affected by tick)")
         path1_key = subvol_path1.rstrip("/")
-        for poll_i in range(20):
-            time.sleep(10)
-            peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
-                cephfs_mirror_node[0], source_clients[0], source_fs
-            )
-            ps = peer_status.get(path1_key, {})
-            log.info(
-                f"[Asok tick wait {poll_i}] state={ps.get('state')}, "
-                f"last_synced={ps.get('last_synced_snap', {}).get('name')}"
-            )
-            if (
-                ps.get("state") == "idle"
-                and ps.get("last_synced_snap", {}).get("name") == "snap_tick"
-            ):
-                break
+        snap_tick_status = wait_for_idle(
+            fs_mirroring_utils,
+            cephfs_mirror_node[0],
+            source_clients[0],
+            source_fs,
+            subvol_path1,
+            timeout=300,
+            expected_snap_name="snap_tick",
+        )
+        # snap_tick has 20 x 1 MiB files — counters MUST be non-zero
+        assert_data_snap_counters(snap_tick_status, snap_name="snap_tick")
 
         log.info("snap_tick synced. Now create snap_tick2 and measure MGR lag")
         source_clients[0].exec_command(sudo=True, cmd=f"touch {mount_path1}tick2_file")
@@ -1117,22 +1118,17 @@ def run(ceph_cluster, **kw):
             )
 
         log.info("Wait for snap_mgr_failover sync to complete and return to idle")
-        for poll_i in range(40):
-            time.sleep(15)
-            peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
-                cephfs_mirror_node[0], source_clients[0], source_fs
-            )
-            ps = peer_status.get(path1_key, {})
-            state = ps.get("state")
-            last = ps.get("last_synced_snap", {}).get("name")
-            log.info(f"[MGR Failover Wait {poll_i}] state={state}, last_synced={last}")
-            if state == "idle" and last == snap_mgr_failover:
-                log.info(f"Sync reached idle for {snap_mgr_failover}: {ps}")
-                break
-        else:
-            raise CommandFailed(
-                "Scenario 11: Sync did not reach idle after MGR failover"
-            )
+        failover_idle_status = wait_for_idle(
+            fs_mirroring_utils,
+            cephfs_mirror_node[0],
+            source_clients[0],
+            source_fs,
+            subvol_path1,
+            timeout=600,
+            expected_snap_name=snap_mgr_failover,
+        )
+        # snap_mgr_failover has 5 GiB data — counters MUST be non-zero
+        assert_data_snap_counters(failover_idle_status, snap_name=snap_mgr_failover)
 
         log.info(
             "Scenario 11 PASSED: MGR failover during active sync preserved metrics and completed sync"
@@ -1284,29 +1280,9 @@ def run(ceph_cluster, **kw):
                 )
 
             log.info("Remove paths used for mirroring")
-            for subvol_path in subvolume_paths:
-                fs_mirroring_utils.remove_path_from_mirroring(
-                    source_clients[0], source_fs, subvol_path
-                )
-            for extra_path in ["/new_test_dir/", "/temp_cleanup_dir/"]:
-                source_clients[0].exec_command(
-                    sudo=True,
-                    cmd=f"ceph fs snapshot mirror remove {source_fs} {extra_path}",
-                    check_ec=False,
-                )
+            fs_mirroring_utils.remove_all_mirror_paths(source_clients[0], source_fs)
 
-            log.info("Destroy CephFS Mirroring setup")
-            peer_uuid = fs_mirroring_utils.get_peer_uuid_by_name(
-                source_clients[0], source_fs
-            )
-            fs_mirroring_utils.destroy_cephfs_mirroring(
-                source_fs,
-                source_clients[0],
-                target_fs,
-                target_clients[0],
-                target_user,
-                peer_uuid,
-            )
+            # Note: Mirroring teardown is handled by teardown_cephfs_mirroring.py
 
             log.info("Remove Subvolumes")
             for i in range(1, 3):

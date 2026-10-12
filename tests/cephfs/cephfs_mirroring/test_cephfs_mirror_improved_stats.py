@@ -7,6 +7,8 @@ import traceback
 from ceph.ceph import CommandFailed
 from tests.cephfs.cephfs_mirroring.cephfs_mirroring_utils import (
     CephfsMirroringUtils,
+    assert_data_snap_counters,
+    parse_sync_bytes_to_int,
     validate_current_syncing_snap_schema,
     validate_last_synced_snap_schema,
     validate_peer_status_schema,
@@ -16,21 +18,6 @@ from tests.cephfs.cephfs_utilsV1 import FsUtils
 from utility.log import Log
 
 log = Log(__name__)
-
-UNIT_MULTIPLIERS = {
-    "B": 1,
-    "KiB": 1024,
-    "MiB": 1024**2,
-    "GiB": 1024**3,
-}
-
-
-def parse_bytes_str(bytes_str):
-    """Parse human-readable byte string like '5.12 MiB' to float bytes."""
-    parts = bytes_str.strip().split()
-    if len(parts) != 2:
-        return 0.0
-    return float(parts[0]) * UNIT_MULTIPLIERS.get(parts[1], 1)
 
 
 def run(ceph_cluster, **kw):
@@ -87,18 +74,19 @@ def run(ceph_cluster, **kw):
 
         source_fs = "cephfs"
         target_fs = "cephfs"
-        target_user = "mirror_remote"
-        target_site_name = "remote_site"
 
-        log.info("Deploy CephFS Mirroring Configuration")
-        fs_mirroring_utils.deploy_cephfs_mirroring(
-            source_fs,
-            source_clients[0],
-            target_fs,
-            target_clients[0],
-            target_user,
-            target_site_name,
+        # Verify mirroring is configured (setup by setup_cephfs_mirroring.py)
+        log.info("Verifying CephFS mirroring is configured...")
+        mirror_check = fs_mirroring_utils.is_mirroring_configured(
+            source_clients[0], source_fs
         )
+        if not mirror_check["configured"]:
+            log.error(
+                "CephFS mirroring is not configured. "
+                "Run setup_cephfs_mirroring.py first."
+            )
+            return 1
+        log.info("Mirroring configured with peer_uuid: %s", mirror_check["peer_uuid"])
 
         subvol_group_name = "subvolgroup_stats"
         mounting_dir = "".join(
@@ -188,13 +176,18 @@ def run(ceph_cluster, **kw):
             source_fs,
             subvolume_paths[0],
             timeout=180,
+            expected_snap_name="snap_empty",
+            allow_zero_bytes=True,
         )
         last_synced_p1 = path1_status.get("last_synced_snap", {})
         if last_synced_p1.get("name") != "snap_empty":
             raise CommandFailed(
                 f"R12 path1 FAILED: Expected snap_empty, got {last_synced_p1}"
             )
-        log.info("R12 path1 PASSED (asok): snap_empty synced")
+        log.info(
+            "R12 path1 PASSED (asok): snap_empty synced "
+            f"(zero-data negative case, snaps_synced={path1_status.get('snaps_synced')})"
+        )
 
         log.info("R12 path2: Validate via MGR mirror status")
         mgr_status = fs_mirroring_utils.get_mgr_mirror_status(
@@ -278,6 +271,7 @@ def run(ceph_cluster, **kw):
             source_fs,
             subvolume_paths[0],
             timeout=300,
+            expected_snap_name="snap1",
         )
 
         peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
@@ -327,7 +321,14 @@ def run(ceph_cluster, **kw):
         log.info("R7: Validate last_synced_snap enrichment via asok")
         last_synced_asok = path1_status.get("last_synced_snap", {})
         validate_last_synced_snap_schema(last_synced_asok, expected_snap_name="snap1")
+        # snap1 has 100 MiB of data — counters MUST be non-zero
+        assert_data_snap_counters(path1_status, snap_name="snap1")
         log.info(f"R7 asok last_synced_snap: {json.dumps(last_synced_asok, indent=2)}")
+        log.info(
+            "R7 asok: sync_bytes=%s, sync_files=%s",
+            last_synced_asok.get("sync_bytes"),
+            last_synced_asok.get("sync_files"),
+        )
 
         log.info("R7: Validate last_synced_snap enrichment via MGR interface")
         mgr_status = fs_mirroring_utils.get_mgr_mirror_status(
@@ -343,7 +344,19 @@ def run(ceph_cluster, **kw):
             raise CommandFailed("R7 FAILED: No peer entry in MGR status")
         last_synced_mgr = mgr_peer[0].get("last_synced_snap", {})
         validate_last_synced_snap_schema(last_synced_mgr, expected_snap_name="snap1")
+        mgr_sync_bytes = parse_sync_bytes_to_int(last_synced_mgr.get("sync_bytes"))
+        mgr_sync_files = int(last_synced_mgr.get("sync_files") or 0)
+        if mgr_sync_bytes <= 0 or mgr_sync_files < 1:
+            raise CommandFailed(
+                f"R7 FAILED (MGR): snap1 has sync_bytes={last_synced_mgr.get('sync_bytes')}, "
+                f"sync_files={mgr_sync_files}; expected non-zero for a 100 MiB data snap"
+            )
         log.info(f"R7 MGR last_synced_snap: {json.dumps(last_synced_mgr, indent=2)}")
+        log.info(
+            "R7 MGR: sync_bytes=%s, sync_files=%s",
+            last_synced_mgr.get("sync_bytes"),
+            mgr_sync_files,
+        )
 
         log.info(
             "R7 PASSED: last_synced_snap enriched fields validated via both asok and MGR"
@@ -413,6 +426,7 @@ def run(ceph_cluster, **kw):
             source_fs,
             subvolume_paths[0],
             timeout=300,
+            expected_snap_name="snap2",
         )
 
         last_snap = path1_status.get("last_synced_snap", {})
@@ -422,24 +436,12 @@ def run(ceph_cluster, **kw):
             f"sync_files={last_snap.get('sync_files')}, "
             f"sync_duration={last_snap.get('sync_duration')}"
         )
-
-        snap2_bytes = last_snap.get("sync_bytes", "0")
-        snap2_files = last_snap.get("sync_files", 0)
-        if last_snap.get("name") == "snap2":
-            if isinstance(snap2_bytes, str):
-                has_bytes = snap2_bytes != "0.00 B" and snap2_bytes != "0"
-            else:
-                has_bytes = snap2_bytes > 0
-            if has_bytes and snap2_files > 0:
-                log.info(
-                    f"R2 VALIDATED: Delta sync transferred "
-                    f"sync_bytes={snap2_bytes}, sync_files={snap2_files}"
-                )
-            else:
-                log.warning(
-                    f"R2: Delta sync reported sync_bytes={snap2_bytes}, "
-                    f"sync_files={snap2_files} — expected non-zero"
-                )
+        snap2_counters = assert_data_snap_counters(path1_status, snap_name="snap2")
+        log.info(
+            f"R2 VALIDATED: Delta sync transferred "
+            f"sync_bytes={snap2_counters['sync_bytes']}, "
+            f"sync_files={snap2_counters['sync_files']}"
+        )
 
         snaps_now = path1_status.get("snaps_synced", 0)
         if snaps_now <= snaps_before_r2:
@@ -482,19 +484,21 @@ def run(ceph_cluster, **kw):
             source_fs,
             subvolume_paths[0],
             timeout=360,
+            expected_snap_name="snap3",
         )
 
         log.info("Modify 5 of 10 small files + few bytes in large file")
         source_clients[0].exec_command(
             sudo=True,
             cmd=f"for i in $(seq 1 5); do dd if=/dev/urandom of={mount_path1}small_$i "
-            f"bs=1M count=1 conv=notrunc 2>/dev/null; done",
+            f"bs=1M count=1 conv=notrunc,fdatasync 2>/dev/null; done",
         )
         source_clients[0].exec_command(
             sudo=True,
             cmd=f"dd if=/dev/urandom of={mount_path1}large_file bs=4K count=1 "
-            f"conv=notrunc seek=100 2>/dev/null",
+            f"conv=notrunc,fdatasync seek=100 2>/dev/null",
         )
+        source_clients[0].exec_command(sudo=True, cmd=f"sync -f {mount_path1}")
 
         log.info("Create snap4 (delta sync with snapdiff + blockdiff)")
         source_clients[0].exec_command(sudo=True, cmd=f"mkdir {mount_path1}.snap/snap4")
@@ -529,19 +533,16 @@ def run(ceph_cluster, **kw):
             source_fs,
             subvolume_paths[0],
             timeout=360,
+            expected_snap_name="snap4",
         )
 
         log.info("R16: Validate via asok after snap4 idle")
         last_synced_asok = path1_status.get("last_synced_snap", {})
         log.info(f"R16 asok last_synced_snap: {json.dumps(last_synced_asok, indent=2)}")
-        if last_synced_asok.get("name") != "snap4":
-            raise CommandFailed(
-                f"R16 FAILED (asok): Expected snap4, got {last_synced_asok.get('name')}"
-            )
-
-        asok_sync_files = last_synced_asok.get("sync_files", 0)
+        asok_counters = assert_data_snap_counters(path1_status, snap_name="snap4")
+        asok_sync_files = asok_counters["sync_files"]
+        asok_sync_bytes = asok_counters["sync_bytes"]
         asok_sync_bytes_str = last_synced_asok.get("sync_bytes", "0 B")
-        asok_sync_bytes = parse_bytes_str(asok_sync_bytes_str)
         log.info(
             f"R16 asok: sync_files={asok_sync_files}, sync_bytes={asok_sync_bytes_str} "
             f"({asok_sync_bytes:.0f} bytes)"
@@ -589,13 +590,18 @@ def run(ceph_cluster, **kw):
                 f"R16 FAILED (MGR): Expected snap4, got {last_synced_mgr.get('name')}"
             )
 
-        mgr_sync_files = last_synced_mgr.get("sync_files", 0)
+        mgr_sync_files = last_synced_mgr.get("sync_files", 0) or 0
         mgr_sync_bytes_str = last_synced_mgr.get("sync_bytes", "0 B")
-        mgr_sync_bytes = parse_bytes_str(mgr_sync_bytes_str)
+        mgr_sync_bytes = parse_sync_bytes_to_int(mgr_sync_bytes_str)
         log.info(
             f"R16 MGR: sync_files={mgr_sync_files}, sync_bytes={mgr_sync_bytes_str} "
             f"({mgr_sync_bytes:.0f} bytes)"
         )
+        if int(mgr_sync_files) < 1 or mgr_sync_bytes <= 0:
+            raise CommandFailed(
+                f"R16 FAILED (MGR): snap4 is a data-modification snap but "
+                f"sync_files={mgr_sync_files}, sync_bytes={mgr_sync_bytes_str}"
+            )
 
         if mgr_sync_files > 6:
             log.warning(
@@ -763,19 +769,16 @@ def run(ceph_cluster, **kw):
         )
 
         log.info("Overhead Phase 1: Wait for baseline sync to reach idle")
-        for poll_i in range(40):
-            time.sleep(15)
-            peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
-                cephfs_mirror_node[0], source_clients[0], source_fs
-            )
-            ps = peer_status.get(path1_key, {})
-            state = ps.get("state")
-            last = ps.get("last_synced_snap", {}).get("name")
-            log.info(f"[Overhead Base Poll {poll_i}] state={state}, last_synced={last}")
-            if state == "idle" and last == snap_overhead_base:
-                break
-        else:
-            raise CommandFailed("Overhead Phase 1: Baseline sync did not complete")
+        overhead_base_status = wait_for_idle(
+            fs_mirroring_utils,
+            cephfs_mirror_node[0],
+            source_clients[0],
+            source_fs,
+            subvolume_paths[0],
+            timeout=600,
+            expected_snap_name=snap_overhead_base,
+        )
+        assert_data_snap_counters(overhead_base_status, snap_name=snap_overhead_base)
         duration_base = time.time() - t_start_base
         log.info(f"Overhead Phase 1: Baseline sync duration = {duration_base:.2f}s")
 
@@ -805,21 +808,18 @@ def run(ceph_cluster, **kw):
         )
 
         log.info("Overhead Phase 2: Wait for active sync to reach idle")
-        for poll_i in range(40):
-            time.sleep(15)
-            peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
-                cephfs_mirror_node[0], source_clients[0], source_fs
-            )
-            ps = peer_status.get(path1_key, {})
-            state = ps.get("state")
-            last = ps.get("last_synced_snap", {}).get("name")
-            log.info(
-                f"[Overhead Active Poll {poll_i}] state={state}, last_synced={last}"
-            )
-            if state == "idle" and last == snap_overhead_active:
-                break
-        else:
-            raise CommandFailed("Overhead Phase 2: Active sync did not complete")
+        overhead_active_status = wait_for_idle(
+            fs_mirroring_utils,
+            cephfs_mirror_node[0],
+            source_clients[0],
+            source_fs,
+            subvolume_paths[0],
+            timeout=600,
+            expected_snap_name=snap_overhead_active,
+        )
+        assert_data_snap_counters(
+            overhead_active_status, snap_name=snap_overhead_active
+        )
         duration_active = time.time() - t_start_active
         log.info(f"Overhead Phase 2: Active sync duration = {duration_active:.2f}s")
 
@@ -850,9 +850,23 @@ def run(ceph_cluster, **kw):
     finally:
         log.info("Clean up the system")
         try:
-            if not (locals().get("mounting_dir") and locals().get("subvolume_paths")):
-                raise Exception("Skip cleanup: setup did not complete")
             log.info("Reset config overrides")
+            if locals().get("source_clients"):
+                source_clients[0].exec_command(
+                    sudo=True,
+                    cmd="ceph config rm client.cephfs-mirror cephfs_mirror_tick_interval",
+                    check_ec=False,
+                )
+                source_clients[0].exec_command(
+                    sudo=True,
+                    cmd="ceph config rm client.cephfs-mirror cephfs_mirror_distribute_datasync_threads",
+                    check_ec=False,
+                )
+
+            if not (locals().get("mounting_dir") and locals().get("subvolume_paths")):
+                log.info("Setup did not complete - skipping test-specific cleanup")
+                # Note: Mirroring teardown is handled by teardown_cephfs_mirroring.py
+                raise Exception("Skip full cleanup: setup did not complete")
             source_clients[0].exec_command(
                 sudo=True,
                 cmd="ceph config rm client.cephfs-mirror "
@@ -906,23 +920,13 @@ def run(ceph_cluster, **kw):
                     sudo=True, cmd=f"rm -rf {mdir}", check_ec=False
                 )
 
+            log.info("Remove paths from mirroring")
             for subvol_path in subvolume_paths:
                 fs_mirroring_utils.remove_path_from_mirroring(
                     source_clients[0], source_fs, subvol_path
                 )
 
-            log.info("Destroy CephFS Mirroring setup")
-            peer_uuid = fs_mirroring_utils.get_peer_uuid_by_name(
-                source_clients[0], source_fs
-            )
-            fs_mirroring_utils.destroy_cephfs_mirroring(
-                source_fs,
-                source_clients[0],
-                target_fs,
-                target_clients[0],
-                target_user,
-                peer_uuid,
-            )
+            # Note: Mirroring teardown is handled by teardown_cephfs_mirroring.py
 
             for sv in subvol_details:
                 fs_util_ceph1.remove_subvolume(

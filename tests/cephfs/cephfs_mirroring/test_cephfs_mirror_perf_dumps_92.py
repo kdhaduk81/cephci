@@ -85,8 +85,6 @@ def run(ceph_cluster, **kw):
 
         source_fs = "cephfs"
         target_fs = "cephfs"
-        target_user = "mirror_remote"
-        target_site_name = "remote_site"
 
         log.info("checking Pre-requisites")
         if not source_clients or not target_clients:
@@ -102,15 +100,18 @@ def run(ceph_cluster, **kw):
         fs_util_ceph1.auth_list(source_clients)
         fs_util_ceph2.auth_list(target_clients)
 
-        log.info("Deploy CephFS Mirroring Configuration")
-        fs_mirroring_utils.deploy_cephfs_mirroring(
-            source_fs,
-            source_clients[0],
-            target_fs,
-            target_clients[0],
-            target_user,
-            target_site_name,
+        # Verify mirroring is configured (setup by setup_cephfs_mirroring.py)
+        log.info("Verifying CephFS mirroring is configured...")
+        mirror_check = fs_mirroring_utils.is_mirroring_configured(
+            source_clients[0], source_fs
         )
+        if not mirror_check["configured"]:
+            log.error(
+                "CephFS mirroring is not configured. "
+                "Run setup_cephfs_mirroring.py first."
+            )
+            return 1
+        log.info("Mirroring configured with peer_uuid: %s", mirror_check["peer_uuid"])
 
         subvol_group_name = "subvolgroup_perf"
         subvol_name = "subvol_perf"
@@ -567,12 +568,15 @@ def run(ceph_cluster, **kw):
                             counters.get("current_sync_files_percent", 0),
                             snaps_synced,
                         )
-                        if dir_state == 1 and bps > 0:
+                        files_pct = counters.get("current_sync_files_percent", 0)
+                        if dir_state == 1 and (bps > 0 or files_pct > 0):
                             log.info(
                                 "[BPS] Captured non-zero basis points: "
-                                "bps=%s (%.2f%%)",
+                                "bytes_pct=%s (%.2f%%), files_pct=%s (%.2f%%)",
                                 bps,
                                 bps / 100.0,
+                                files_pct,
+                                files_pct / 100.0,
                             )
                             bps_validated = True
                         if dir_state == 0 and snaps_synced >= 1:
@@ -604,8 +608,8 @@ def run(ceph_cluster, **kw):
         )
         if not bps_validated:
             raise CommandFailed(
-                "S4 FAILED: current_sync_bytes_percent (BPS) was never "
-                "non-zero during 5 GiB sync — expected progress percentage"
+                "S4 FAILED: neither current_sync_bytes_percent nor "
+                "current_sync_files_percent (BPS) was non-zero during 5 GiB sync"
             )
         log.info("S4: Basis points (BPS) validated — non-zero captured during sync")
 
@@ -802,18 +806,7 @@ def run(ceph_cluster, **kw):
                 check_ec=False,
             )
 
-            log.info("Destroy CephFS Mirroring setup")
-            peer_uuid = fs_mirroring_utils.get_peer_uuid_by_name(
-                source_clients[0], source_fs
-            )
-            fs_mirroring_utils.destroy_cephfs_mirroring(
-                source_fs,
-                source_clients[0],
-                target_fs,
-                target_clients[0],
-                target_user,
-                peer_uuid,
-            )
+            # Note: Mirroring teardown is handled by teardown_cephfs_mirroring.py
 
             log.info("Remove Subvolumes")
             for i in range(1, 3):

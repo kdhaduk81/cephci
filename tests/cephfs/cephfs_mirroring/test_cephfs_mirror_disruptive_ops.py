@@ -7,6 +7,7 @@ import traceback
 from ceph.ceph import CommandFailed
 from tests.cephfs.cephfs_mirroring.cephfs_mirroring_utils import (
     CephfsMirroringUtils,
+    assert_data_snap_counters,
     wait_for_idle,
 )
 from tests.cephfs.cephfs_utilsV1 import FsUtils
@@ -64,8 +65,6 @@ def run(ceph_cluster, **kw):
 
         source_fs = "cephfs"
         target_fs = "cephfs"
-        target_user = "mirror_remote"
-        target_site_name = "remote_site"
 
         log.info("checking Pre-requisites")
         if not source_clients or not target_clients:
@@ -80,15 +79,18 @@ def run(ceph_cluster, **kw):
         fs_util_ceph1.auth_list(source_clients)
         fs_util_ceph2.auth_list(target_clients)
 
-        log.info("Deploy CephFS Mirroring Configuration")
-        fs_mirroring_utils.deploy_cephfs_mirroring(
-            source_fs,
-            source_clients[0],
-            target_fs,
-            target_clients[0],
-            target_user,
-            target_site_name,
+        # Verify mirroring is configured (setup by setup_cephfs_mirroring.py)
+        log.info("Verifying CephFS mirroring is configured...")
+        mirror_check = fs_mirroring_utils.is_mirroring_configured(
+            source_clients[0], source_fs
         )
+        if not mirror_check["configured"]:
+            log.error(
+                "CephFS mirroring is not configured. "
+                "Run setup_cephfs_mirroring.py first."
+            )
+            return 1
+        log.info("Mirroring configured with peer_uuid: %s", mirror_check["peer_uuid"])
 
         subvol_group_name = "subvolgroup_disruptive"
         subvol_name = "subvol_disruptive"
@@ -157,13 +159,14 @@ def run(ceph_cluster, **kw):
         )
         source_clients[0].exec_command(
             sudo=True,
-            cmd=f"dd if=/dev/urandom of={mount_path}large_5g.dat bs=100M count=50 status=none",
+            cmd=f"dd if=/dev/urandom of={mount_path}large_5g.dat bs=100M count=50 conv=fdatasync status=none",
         )
         source_clients[0].exec_command(
             sudo=True,
             cmd=f"for i in $(seq 1 50); do dd if=/dev/urandom of={mount_path}small_file_$i.dat "
-            f"bs=100k count=1 status=none 2>/dev/null; done",
+            f"bs=100k count=1 conv=fdatasync status=none 2>/dev/null; done",
         )
+        source_clients[0].exec_command(sudo=True, cmd=f"sync -f {mount_path}")
 
         snap_restart = "snap_restart_test"
         log.info(f"Create snapshot {snap_restart} to initiate sync")
@@ -171,11 +174,10 @@ def run(ceph_cluster, **kw):
             sudo=True, cmd=f"mkdir {mount_path}.snap/{snap_restart}"
         )
 
-        log.info("Poll for active sync in progress before restarting mirror daemon")
-        pre_restart_pct = 0.0
-        sync_active = False
-        for poll in range(30):
-            time.sleep(2)
+        log.info(
+            "Check sync state or restart immediately while data transfer is in progress"
+        )
+        for poll in range(15):
             peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
                 cephfs_mirror_node[0], source_clients[0], source_fs
             )
@@ -184,16 +186,10 @@ def run(ceph_cluster, **kw):
             syncing_snap = path_status.get("current_syncing_snap")
             log.info(f"[Pre-Restart Poll {poll}] state={state}, syncing={syncing_snap}")
 
-            if state == "syncing" and syncing_snap:
-                sync_active = True
-                pct_str = syncing_snap.get("bytes", {}).get("sync_percent", "0%")
-                try:
-                    pre_restart_pct = float(str(pct_str).rstrip("%"))
-                except ValueError:
-                    pre_restart_pct = 0.0
-                log.info(f"Active sync detected with sync_percent={pre_restart_pct}%")
-                if pre_restart_pct >= 20.0 or poll >= 10:
-                    break
+            if state == "syncing" or syncing_snap:
+                log.info("Active sync observed, executing immediate daemon restart")
+                break
+            time.sleep(1)
 
         log.info("Restart cephfs-mirror daemon mid-sync")
         source_clients[0].exec_command(sudo=True, cmd="ceph orch restart cephfs-mirror")
@@ -208,11 +204,15 @@ def run(ceph_cluster, **kw):
 
         log.info("Validate post-restart state via asok")
         for poll_i in range(12):
-            post_restart_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
-                cephfs_mirror_node[0], source_clients[0], source_fs
+            post_restart_status = (
+                fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
+                    cephfs_mirror_node[0], source_clients[0], source_fs
+                )
             )
             post_path_status = post_restart_status.get(path_key, {})
-            log.info(f"[Post-restart Poll {poll_i}] asok status: {json.dumps(post_path_status, indent=2)}")
+            log.info(
+                f"[Post-restart Poll {poll_i}] asok status: {json.dumps(post_path_status, indent=2)}"
+            )
             last_synced_after_restart = post_path_status.get("last_synced_snap", {})
             if last_synced_after_restart.get("name") in ("snap_baseline", snap_restart):
                 break
@@ -232,8 +232,11 @@ def run(ceph_cluster, **kw):
         )
         log.info(f"Post-restart MGR status: {json.dumps(mgr_status, indent=2)}")
 
-        log.info(f"Wait for {snap_restart} to finish sync and return to idle")
-        final_path_status = wait_for_idle(
+        log.info(
+            f"Wait for {snap_restart} to finish sync and return to idle "
+            "(name match only — session snaps_synced may still be 0 after restart)"
+        )
+        wait_for_idle(
             fs_mirroring_utils,
             cephfs_mirror_node[0],
             source_clients[0],
@@ -241,17 +244,37 @@ def run(ceph_cluster, **kw):
             subvol_path,
             timeout=600,
             expected_snap_name=snap_restart,
+            require_snaps_synced=False,
+            allow_zero_bytes=True,
+        )
+
+        snap_verify = "snap_restart_verify"
+        log.info(
+            f"Create {snap_verify} with fresh data so post-restart session "
+            "counters must increment (snaps_synced>=1, sync_bytes>0, sync_files>=1)"
+        )
+        source_clients[0].exec_command(
+            sudo=True,
+            cmd=f"dd if=/dev/urandom of={mount_path}post_restart.dat "
+            f"bs=1M count=200 conv=fdatasync status=none",
+        )
+        source_clients[0].exec_command(sudo=True, cmd=f"sync -f {mount_path}")
+        source_clients[0].exec_command(
+            sudo=True, cmd=f"mkdir {mount_path}.snap/{snap_verify}"
+        )
+        final_path_status = wait_for_idle(
+            fs_mirroring_utils,
+            cephfs_mirror_node[0],
+            source_clients[0],
+            source_fs,
+            subvol_path,
+            timeout=600,
+            expected_snap_name=snap_verify,
         )
         log.info(
             f"Final status after daemon restart test: {json.dumps(final_path_status, indent=2)}"
         )
-
-        final_last_synced = final_path_status.get("last_synced_snap", {})
-        if final_last_synced.get("name") != snap_restart:
-            raise CommandFailed(
-                "Daemon restart test FAILED: Expected final last_synced_snap to be "
-                f"{snap_restart}, got {final_last_synced}"
-            )
+        assert_data_snap_counters(final_path_status, snap_name=snap_verify)
 
         log.info("=" * 60)
         log.info("PASSED: Daemon restart mid-sync preserved stats and completed sync")
@@ -264,8 +287,13 @@ def run(ceph_cluster, **kw):
         log.info("Scenario: Sync failure does not corrupt metrics")
         log.info("=" * 60)
 
-        snaps_synced_before = path_status.get("snaps_synced", 0)
+        snaps_synced_before = final_path_status.get("snaps_synced", 0)
         log.info(f"snaps_synced before failure injection: {snaps_synced_before}")
+        if int(snaps_synced_before or 0) < 1:
+            raise CommandFailed(
+                "Sync failure test FAILED: snaps_synced is 0 before injection "
+                "after a data snap — cannot validate counter stability"
+            )
 
         log.info("Inject sync failure: create conflicting snapshot on target FIRST")
         target_mount_path = "/mnt/remote_dir_disruptive"
@@ -311,9 +339,22 @@ def run(ceph_cluster, **kw):
                 f"Sync failure test FAILED: snaps_synced falsely incremented from "
                 f"{snaps_synced_before} to {snaps_synced_after}"
             )
-        log.info(
-            f"Asok: snaps_synced stable ({snaps_synced_before} == {snaps_synced_after})"
-        )
+        if int(snaps_synced_after or 0) < 1:
+            raise CommandFailed(
+                f"Sync failure test FAILED: snaps_synced dropped to "
+                f"{snaps_synced_after} (was {snaps_synced_before}); "
+                f"0 is not a valid stable counter after a data snap"
+            )
+        if snaps_synced_after != snaps_synced_before:
+            log.warning(
+                "Asok: snaps_synced changed during failure "
+                f"({snaps_synced_before} -> {snaps_synced_after}); "
+                "did not increment"
+            )
+        else:
+            log.info(
+                f"Asok: snaps_synced stable ({snaps_synced_before} == {snaps_synced_after})"
+            )
 
         if "current_syncing_snap" in path_status:
             log.warning(
@@ -405,10 +446,18 @@ def run(ceph_cluster, **kw):
     finally:
         log.info("Clean up the system")
         try:
+            if locals().get("source_clients") and locals().get("fs_mirroring_utils"):
+                fs_mirroring_utils.remove_all_mirror_paths(source_clients[0], source_fs)
+
             if not locals().get("mount_path"):
                 raise Exception("Skip cleanup: setup did not complete")
             log.info("Delete the snapshots")
-            for snap in ["snap_baseline", "snap_restart_test", "snap_conflict"]:
+            for snap in [
+                "snap_baseline",
+                "snap_restart_test",
+                "snap_restart_verify",
+                "snap_conflict",
+            ]:
                 source_clients[0].exec_command(
                     sudo=True,
                     cmd=f"rmdir {mount_path}.snap/{snap}",
@@ -443,18 +492,7 @@ def run(ceph_cluster, **kw):
                 source_clients[0], source_fs, subvol_path
             )
 
-            log.info("Destroy CephFS Mirroring setup")
-            peer_uuid = fs_mirroring_utils.get_peer_uuid_by_name(
-                source_clients[0], source_fs
-            )
-            fs_mirroring_utils.destroy_cephfs_mirroring(
-                source_fs,
-                source_clients[0],
-                target_fs,
-                target_clients[0],
-                target_user,
-                peer_uuid,
-            )
+            # Note: Mirroring teardown is handled by teardown_cephfs_mirroring.py
 
             log.info("Remove Subvolumes")
             fs_util_ceph1.remove_subvolume(

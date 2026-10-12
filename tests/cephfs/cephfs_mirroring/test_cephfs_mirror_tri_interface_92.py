@@ -5,7 +5,11 @@ import time
 import traceback
 
 from ceph.ceph import CommandFailed
-from tests.cephfs.cephfs_mirroring.cephfs_mirroring_utils import CephfsMirroringUtils
+from tests.cephfs.cephfs_mirroring.cephfs_mirroring_utils import (
+    CephfsMirroringUtils,
+    assert_data_snap_counters,
+    wait_for_idle,
+)
 from tests.cephfs.cephfs_utilsV1 import FsUtils
 from utility.log import Log
 
@@ -126,8 +130,6 @@ def run(ceph_cluster, **kw):
 
         source_fs = "cephfs"
         target_fs = "cephfs"
-        target_user = "mirror_remote"
-        target_site_name = "remote_site"
 
         log.info("checking Pre-requisites")
         if not source_clients or not target_clients:
@@ -143,15 +145,18 @@ def run(ceph_cluster, **kw):
         fs_util_ceph1.auth_list(source_clients)
         fs_util_ceph2.auth_list(target_clients)
 
-        log.info("Deploy CephFS Mirroring Configuration")
-        fs_mirroring_utils.deploy_cephfs_mirroring(
-            source_fs,
-            source_clients[0],
-            target_fs,
-            target_clients[0],
-            target_user,
-            target_site_name,
+        # Verify mirroring is configured (setup by setup_cephfs_mirroring.py)
+        log.info("Verifying CephFS mirroring is configured...")
+        mirror_check = fs_mirroring_utils.is_mirroring_configured(
+            source_clients[0], source_fs
         )
+        if not mirror_check["configured"]:
+            log.error(
+                "CephFS mirroring is not configured. "
+                "Run setup_cephfs_mirroring.py first."
+            )
+            return 1
+        log.info("Mirroring configured with peer_uuid: %s", mirror_check["peer_uuid"])
 
         source_clients[0].exec_command(
             sudo=True,
@@ -376,6 +381,7 @@ def run(ceph_cluster, **kw):
             raise CommandFailed(
                 f"S1 FAILED: MGR state={mgr_idle}, expected idle after sync"
             )
+        assert_data_snap_counters(tri_idle["asok"], snap_name="snap_tri_full")
         log.info("  CONSISTENT: Both asok and MGR show idle")
         if perf_idle == 0:
             log.info("  CONSISTENT: Perf dir_state=0 (idle)")
@@ -401,7 +407,9 @@ def run(ceph_cluster, **kw):
             f"  CONSISTENT: last_synced_snap name matches ({asok_last.get('name')})"
         )
 
-        log.info("Delta sync: remove tri_full and write 5 GiB new data for second snapshot")
+        log.info(
+            "Delta sync: remove tri_full and write 5 GiB new data for second snapshot"
+        )
         source_clients[0].exec_command(
             sudo=True, cmd=f"rm -f {mount_path1}tri_full", check_ec=False
         )
@@ -466,6 +474,7 @@ def run(ceph_cluster, **kw):
                     log.info(f"Delta sync completed, last_synced_snap: {last}")
                     break
 
+        assert_data_snap_counters(tri["asok"], snap_name="snap_tri_delta")
         log.info("Tri-interface consistency (full/delta/idle) validated")
 
         # ============================================================
@@ -476,6 +485,26 @@ def run(ceph_cluster, **kw):
         log.info("=" * 60)
 
         target_mount_fail = "/mnt/tri_fail_target"
+        source_clients[0].exec_command(
+            sudo=True,
+            cmd=f"dd if=/dev/urandom of={mount_path2}tri_fail_base "
+            f"bs=1M count=8 conv=fdatasync status=none",
+        )
+        source_clients[0].exec_command(
+            sudo=True, cmd=f"mkdir {mount_path2}.snap/snap_tri_fail_base"
+        )
+        path2_idle = wait_for_idle(
+            fs_mirroring_utils,
+            cephfs_mirror_node[0],
+            source_clients[0],
+            source_fs,
+            subvol_path2,
+            timeout=300,
+            expected_snap_name="snap_tri_fail_base",
+        )
+        snaps_before_fail = assert_data_snap_counters(
+            path2_idle, snap_name="snap_tri_fail_base"
+        )["snaps_synced"]
         try:
             fs_mirroring_utils.inject_sync_failure(
                 target_clients[0],
@@ -485,24 +514,46 @@ def run(ceph_cluster, **kw):
                 "snap_conflict",
                 target_fs,
             )
-            time.sleep(30)
-
-            tri_fail = collect_tri_interface(
-                fs_mirroring_utils,
-                cephfs_mirror_node[0],
-                source_clients[0],
-                source_fs,
-                fsid,
-                asok_file,
-                subvol_path2,
-                label="S2-failure",
+            source_clients[0].exec_command(
+                sudo=True, cmd=f"mkdir {mount_path2}.snap/snap_conflict"
             )
-            asok_state = tri_fail["asok"].get("state", "")
-            log.info(f"Asok state during failure: {asok_state}")
+
+            fail_state = ""
+            tri_fail = {}
+            for poll_i in range(20):
+                time.sleep(5)
+                tri_fail = collect_tri_interface(
+                    fs_mirroring_utils,
+                    cephfs_mirror_node[0],
+                    source_clients[0],
+                    source_fs,
+                    fsid,
+                    asok_file,
+                    subvol_path2,
+                    label=f"S2-failure Poll {poll_i}",
+                )
+                fail_state = tri_fail["asok"].get("state", "")
+                log.info(f"Asok state during failure poll {poll_i}: {fail_state}")
+                if fail_state == "failed":
+                    break
+            if fail_state != "failed":
+                raise CommandFailed(
+                    f"S2 FAILED: expected asok state=failed, got {fail_state}"
+                )
             log.info(f"Full asok data during failure: {tri_fail['asok']}")
 
             snaps_synced = tri_fail["asok"].get("snaps_synced", 0)
             log.info(f"snaps_synced during failure: {snaps_synced}")
+            if int(snaps_synced or 0) < 1:
+                raise CommandFailed(
+                    f"S2 FAILED: snaps_synced={snaps_synced} during failure "
+                    f"after data snap (before={snaps_before_fail})"
+                )
+            if snaps_synced > snaps_before_fail:
+                raise CommandFailed(
+                    f"S2 FAILED: snaps_synced incremented during failure "
+                    f"{snaps_before_fail} -> {snaps_synced}"
+                )
 
         finally:
             for cmd in [
@@ -527,7 +578,11 @@ def run(ceph_cluster, **kw):
         )
         log.info(f"Status before snap lifecycle: {status_before}")
 
-        source_clients[0].exec_command(sudo=True, cmd=f"touch {mount_path2}lc_file")
+        source_clients[0].exec_command(
+            sudo=True,
+            cmd=f"dd if=/dev/urandom of={mount_path2}lc_file "
+            f"bs=1M count=2 conv=fdatasync status=none",
+        )
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path2}.snap/snap_lc"
         )
@@ -567,8 +622,12 @@ def run(ceph_cluster, **kw):
                 f"Counters: synced {before_synced}->{after_synced}, "
                 f"renamed={after_renamed}, deleted={after_deleted}"
             )
-            if after_synced > before_synced:
-                log.info("snaps_synced incremented correctly")
+            if after_synced <= before_synced:
+                raise CommandFailed(
+                    f"S3 FAILED: snaps_synced did not increment "
+                    f"({before_synced} -> {after_synced})"
+                )
+            log.info("snaps_synced incremented correctly")
             if after_renamed > 0:
                 log.info("snaps_renamed incremented correctly")
             if after_deleted > 0:
@@ -583,11 +642,19 @@ def run(ceph_cluster, **kw):
         log.info("Scenario 4: Multiple directories isolation")
         log.info("=" * 60)
 
-        source_clients[0].exec_command(sudo=True, cmd=f"touch {mount_path1}multi_1")
+        source_clients[0].exec_command(
+            sudo=True,
+            cmd=f"dd if=/dev/urandom of={mount_path1}multi_1 "
+            f"bs=1M count=2 conv=fdatasync status=none",
+        )
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path1}.snap/snap_multi_d1"
         )
-        source_clients[0].exec_command(sudo=True, cmd=f"touch {mount_path3}multi_3")
+        source_clients[0].exec_command(
+            sudo=True,
+            cmd=f"dd if=/dev/urandom of={mount_path3}multi_3 "
+            f"bs=1M count=2 conv=fdatasync status=none",
+        )
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path3}.snap/snap_multi_d3"
         )
@@ -636,6 +703,8 @@ def run(ceph_cluster, **kw):
         log.info(f"Dir3 full asok: {tri_d3['asok']}")
         log.info(f"Dir1 full perf: {tri_d1['perf']}")
         log.info(f"Dir3 full perf: {tri_d3['perf']}")
+        assert_data_snap_counters(tri_d1["asok"], snap_name="snap_multi_d1")
+        assert_data_snap_counters(tri_d3["asok"], snap_name="snap_multi_d3")
         log.info("Multiple directories isolation validated")
 
         # ============================================================
@@ -790,6 +859,9 @@ def run(ceph_cluster, **kw):
     finally:
         log.info("Clean up the system")
         try:
+            if locals().get("source_clients") and locals().get("fs_mirroring_utils"):
+                fs_mirroring_utils.remove_all_mirror_paths(source_clients[0], source_fs)
+
             if not locals().get("kernel_mounting_dir"):
                 raise Exception("Skip cleanup: setup did not complete")
             log.info("Cleanup: Reset config overrides")
@@ -805,6 +877,7 @@ def run(ceph_cluster, **kw):
             all_snaps = [
                 "snap_tri_full",
                 "snap_tri_delta",
+                "snap_tri_fail_base",
                 "snap_conflict",
                 "snap_lc",
                 "snap_lc_renamed",
@@ -851,18 +924,7 @@ def run(ceph_cluster, **kw):
                     source_clients[0], source_fs, subvol_path
                 )
 
-            log.info("Destroy CephFS Mirroring setup")
-            peer_uuid = fs_mirroring_utils.get_peer_uuid_by_name(
-                source_clients[0], source_fs
-            )
-            fs_mirroring_utils.destroy_cephfs_mirroring(
-                source_fs,
-                source_clients[0],
-                target_fs,
-                target_clients[0],
-                target_user,
-                peer_uuid,
-            )
+            # Note: Mirroring teardown is handled by teardown_cephfs_mirroring.py
 
             log.info("Remove Subvolumes")
             for i in range(1, 4):

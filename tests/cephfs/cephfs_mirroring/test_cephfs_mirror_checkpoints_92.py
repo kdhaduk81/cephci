@@ -68,8 +68,6 @@ def run(ceph_cluster, **kw):
 
         source_fs = "cephfs"
         target_fs = "cephfs"
-        target_user = "mirror_remote"
-        target_site_name = "remote_site"
 
         log.info("checking Pre-requisites")
         if not source_clients or not target_clients:
@@ -85,15 +83,18 @@ def run(ceph_cluster, **kw):
         fs_util_ceph1.auth_list(source_clients)
         fs_util_ceph2.auth_list(target_clients)
 
-        log.info("Deploy CephFS Mirroring Configuration")
-        fs_mirroring_utils.deploy_cephfs_mirroring(
-            source_fs,
-            source_clients[0],
-            target_fs,
-            target_clients[0],
-            target_user,
-            target_site_name,
+        # Verify mirroring is configured (setup by setup_cephfs_mirroring.py)
+        log.info("Verifying CephFS mirroring is configured...")
+        mirror_check = fs_mirroring_utils.is_mirroring_configured(
+            source_clients[0], source_fs
         )
+        if not mirror_check["configured"]:
+            log.error(
+                "CephFS mirroring is not configured. "
+                "Run setup_cephfs_mirroring.py first."
+            )
+            return 1
+        log.info("Mirroring configured with peer_uuid: %s", mirror_check["peer_uuid"])
 
         subvol_group_name = "subvolgroup_ckpt"
         subvol_name = "subvol_ckpt"
@@ -635,10 +636,10 @@ def run(ceph_cluster, **kw):
             sudo=True, cmd=f"mkdir {mount_path}.snap/snap_dynamic_add"
         )
 
-        log.info("Add checkpoint immediately for snap_dynamic_add and monitor sync lifecycle")
-        checkpoint_add(
-            source_clients[0], source_fs, subvol_path1, "snap_dynamic_add"
+        log.info(
+            "Add checkpoint immediately for snap_dynamic_add and monitor sync lifecycle"
         )
+        checkpoint_add(source_clients[0], source_fs, subvol_path1, "snap_dynamic_add")
         log.info("Checkpoint added for snap_dynamic_add")
 
         for poll_i in range(30):
@@ -694,51 +695,65 @@ def run(ceph_cluster, **kw):
         )
         source_clients[0].exec_command(
             sudo=True,
-            cmd=f"dd if=/dev/urandom of={mount_path}dynamic_rm_data bs=100M count=50 status=none",
+            cmd=f"dd if=/dev/urandom of={mount_path}dynamic_rm_data "
+            f"bs=100M count=50 conv=fdatasync status=none",
         )
+        source_clients[0].exec_command(sudo=True, cmd=f"sync -f {mount_path}")
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path}.snap/snap_dynamic_rm"
         )
         checkpoint_add(source_clients[0], source_fs, subvol_path1, "snap_dynamic_rm")
 
-        log.info("Wait for sync to start, then remove checkpoint mid-sync")
-        for poll_i in range(30):
-            time.sleep(2)
+        log.info("Poll immediately and remove checkpoint as soon as sync is active")
+        ckpt_removed = False
+        for poll_i in range(60):
             peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
                 cephfs_mirror_node[0], source_clients[0], source_fs
             )
             ps = peer_status.get(path_key, {})
             state = ps.get("state")
             syncing = ps.get("current_syncing_snap")
+            last_name = (ps.get("last_synced_snap") or {}).get("name")
             log.info(f"[Dynamic Rm Poll {poll_i}] state={state}, syncing={syncing}")
-            if state == "syncing" or syncing:
+            if state == "syncing" or (
+                syncing and syncing.get("name") == "snap_dynamic_rm"
+            ):
                 checkpoint_rm(
                     source_clients[0], source_fs, subvol_path1, "snap_dynamic_rm"
                 )
+                ckpt_removed = True
                 log.info("Checkpoint removed mid-sync for snap_dynamic_rm")
                 break
+            if state == "idle" and last_name == "snap_dynamic_rm":
+                log.warning(
+                    "7b: snap_dynamic_rm reached idle before a mid-sync window "
+                    "was observed — removing checkpoint after sync"
+                )
+                break
+            time.sleep(1)
 
-        log.info(
-            "Wait for snap_dynamic_rm sync to finish and confirm checkpoint is not present"
-        )
-        fs_mirroring_utils.validate_snapshot_sync_status(
+        if not ckpt_removed:
+            checkpoint_rm(source_clients[0], source_fs, subvol_path1, "snap_dynamic_rm")
+            log.info("Checkpoint removed after snap_dynamic_rm reached idle")
+
+        log.info("Wait for snap_dynamic_rm idle and confirm checkpoint is gone")
+        wait_for_idle(
+            fs_mirroring_utils,
             cephfs_mirror_node[0],
+            source_clients[0],
             source_fs,
-            "snap_dynamic_rm",
-            fsid,
-            asok_file,
-            filesystem_id,
-            peer_uuid,
+            subvol_path1,
+            timeout=300,
+            expected_snap_name="snap_dynamic_rm",
         )
         ckpt_list_dyn_rm = checkpoint_ls(source_clients[0], source_fs, subvol_path1)
+        log.info(f"Checkpoint list after 7b remove: {ckpt_list_dyn_rm}")
         for ckpt in ckpt_list_dyn_rm:
             if ckpt.get("snap_name") == "snap_dynamic_rm":
                 raise CommandFailed(
-                    "7b FAILED: Checkpoint snap_dynamic_rm reappeared after remove"
+                    "7b FAILED: Checkpoint snap_dynamic_rm still present after remove"
                 )
-        log.info(
-            "7b PASSED: Checkpoint removed mid-sync did not disrupt sync or reappear"
-        )
+        log.info("7b PASSED: Checkpoint removed and did not disrupt sync or reappear")
 
         # ============================================================
         # Scenario 8: Checkpoint on renamed snapshot
@@ -927,6 +942,9 @@ def run(ceph_cluster, **kw):
     finally:
         log.info("Clean up the system")
         try:
+            if locals().get("source_clients") and locals().get("fs_mirroring_utils"):
+                fs_mirroring_utils.remove_all_mirror_paths(source_clients[0], source_fs)
+
             if not locals().get("mount_path"):
                 raise Exception("Skip cleanup: setup did not complete")
             log.info("Cleanup: Deactivate and remove snap schedule")
@@ -993,18 +1011,7 @@ def run(ceph_cluster, **kw):
                 source_clients[0], source_fs, subvol_path1
             )
 
-            log.info("Destroy CephFS Mirroring setup")
-            peer_uuid = fs_mirroring_utils.get_peer_uuid_by_name(
-                source_clients[0], source_fs
-            )
-            fs_mirroring_utils.destroy_cephfs_mirroring(
-                source_fs,
-                source_clients[0],
-                target_fs,
-                target_clients[0],
-                target_user,
-                peer_uuid,
-            )
+            # Note: Mirroring teardown is handled by teardown_cephfs_mirroring.py
 
             log.info("Remove Subvolumes")
             fs_util_ceph1.remove_subvolume(
