@@ -343,29 +343,28 @@ class CephfsMirroringUtils(object):
                 log.info("Mirroring module not enabled")
                 return result
 
-            # Check if snapshot mirroring is enabled for the filesystem
-            mirror_info, _ = source_client.exec_command(
-                sudo=True,
-                cmd=f"ceph fs snapshot mirror show {source_fs} --format json",
-                check_ec=False,
-            )
-            if "not enabled" in mirror_info.lower() or not mirror_info.strip():
-                log.info("Snapshot mirroring not enabled for %s", source_fs)
-                return result
-
-            # Check if peer exists
+            # Check if snapshot mirroring is active for the filesystem by inspecting
+            # daemon status.  NOTE: 'ceph fs snapshot mirror show <fs>' is NOT a valid
+            # command in Ceph tentacle (20.x) — it returns EINVAL; use daemon status
+            # to determine whether mirroring is enabled and a peer is connected.
             daemon_status, _ = source_client.exec_command(
                 sudo=True,
                 cmd="ceph fs snapshot mirror daemon status -f json",
                 check_ec=False,
             )
             if not daemon_status.strip():
-                log.info("No mirror daemon status available")
+                log.info(
+                    "Snapshot mirroring not enabled for %s (daemon status empty)",
+                    source_fs,
+                )
                 return result
 
             data = json.loads(daemon_status)
             if not data or not isinstance(data, list):
-                log.info("Mirror daemon status is empty or invalid")
+                log.info(
+                    "Snapshot mirroring not enabled for %s (daemon status empty list)",
+                    source_fs,
+                )
                 return result
 
             for daemon_entry in data:
@@ -383,7 +382,7 @@ class CephfsMirroringUtils(object):
                             )
                             return result
 
-            log.info("No peer connection found for %s", source_fs)
+            log.info("No peer connection found for %s in daemon status", source_fs)
             return result
 
         except Exception as e:
@@ -729,7 +728,8 @@ class CephfsMirroringUtils(object):
         log.info("Get Peer Connection Information")
         log.info("Fetch peer connection information from the source system")
         out, _ = source_clients.exec_command(
-            f"ceph fs snapshot mirror peer_list {source_fs} --format json-pretty"
+            sudo=True,
+            cmd=f"ceph fs snapshot mirror peer_list {source_fs} --format json-pretty",
         )
         try:
             data = json.loads(out)
