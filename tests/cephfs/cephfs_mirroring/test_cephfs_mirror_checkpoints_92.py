@@ -532,7 +532,22 @@ def run(ceph_cluster, **kw):
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path}.snap/snap_dup_test"
         )
-        time.sleep(5)
+        # Wait for the daemon to sync snap_dup_test before adding a checkpoint.
+        # The default 5s sleep is not enough — the daemon tick can be up to 60s.
+        # checkpoint_add returns EINVAL (exit 0) if the snap is not yet synced,
+        # which silently prevents checkpoint creation and causes checkpoint_rm to
+        # fail with ENOENT. Use wait_for_idle so the snap is truly replicated first.
+        log.info("6b: Waiting for snap_dup_test to be synced before adding checkpoint")
+        wait_for_idle(
+            fs_mirroring_utils,
+            cephfs_mirror_node[0],
+            source_clients[0],
+            source_fs,
+            subvol_path1,
+            timeout=300,
+            expected_snap_name="snap_dup_test",
+            allow_zero_bytes=True,
+        )
         checkpoint_add(source_clients[0], source_fs, subvol_path1, "snap_dup_test")
         out_dup, err_dup = checkpoint_add(
             source_clients[0], source_fs, subvol_path1, "snap_dup_test", check_ec=False

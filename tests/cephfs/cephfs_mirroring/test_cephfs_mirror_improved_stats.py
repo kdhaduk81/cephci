@@ -809,6 +809,12 @@ def run(ceph_cluster, **kw):
             cmd=f"dd if=/dev/urandom of={mount_path1}overhead_data_active.dat bs=100M count=50 status=none",
         )
         t_start_active = time.time()
+        # Remove any leftover snap from a previous run before creating
+        source_clients[0].exec_command(
+            sudo=True,
+            cmd=f"rmdir {mount_path1}.snap/{snap_overhead_active}",
+            check_ec=False,
+        )
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path1}.snap/{snap_overhead_active}"
         )

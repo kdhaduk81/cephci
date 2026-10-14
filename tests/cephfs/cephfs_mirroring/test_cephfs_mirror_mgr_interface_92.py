@@ -150,6 +150,14 @@ def run(ceph_cluster, **kw):
         subvol_path1 = subvolume_paths[0]
         subvol_path2 = subvolume_paths[1]
 
+        log.info("Remove any leftover tracked paths from previous runs before adding")
+        for subvol_path in subvolume_paths:
+            source_clients[0].exec_command(
+                sudo=True,
+                cmd=f"ceph fs snapshot mirror remove {source_fs} {subvol_path.rstrip('/')}",
+                check_ec=False,
+            )
+
         log.info("Add subvolumes for mirroring")
         for subvol_path in subvolume_paths:
             fs_mirroring_utils.add_path_for_mirroring(

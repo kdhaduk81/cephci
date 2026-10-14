@@ -677,10 +677,12 @@ def run(ceph_cluster, **kw):
             )
         time.sleep(10)
 
-        # Write 500 MiB to ensure sync takes long enough to capture sync-mode
+        # Write 2 GiB so the sync takes ~25-35s — enough to catch during polling.
+        # Each call to get_asok_peer_status_raw involves multi-hop SSH and takes
+        # ~12-14s, so a large write ensures the sync window is wide enough to hit.
         source_clients[0].exec_command(
             sudo=True,
-            cmd="dd if=/dev/urandom of=%sref_file_new bs=1M count=500 "
+            cmd="dd if=/dev/urandom of=%sref_file_new bs=1M count=2048 "
             "conv=fdatasync status=none" % mount_path1,
         )
         source_clients[0].exec_command(sudo=True, cmd="sync -f %s" % mount_path1)
@@ -689,7 +691,7 @@ def run(ceph_cluster, **kw):
         )
 
         # Poll immediately with tight 1s interval to catch sync-mode during active sync.
-        # NOTE: The correct field is 'currently_syncing' (not 'current_syncing_snap').
+        # NOTE: The correct asok field is 'current_syncing_snap' (not 'currently_syncing').
         ref_mode = None
         last_ref2 = {}
         for poll_i in range(300):  # up to 5 minutes at 1s
@@ -699,7 +701,7 @@ def run(ceph_cluster, **kw):
                 )
                 dir_data = status.get(path1_key, {})
                 state = dir_data.get("state", "")
-                syncing = dir_data.get("currently_syncing")
+                syncing = dir_data.get("current_syncing_snap")
                 log.info(
                     "[S5 Poll %d] state=%s, snap=%s, mode=%s",
                     poll_i,
