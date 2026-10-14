@@ -184,6 +184,19 @@ tests:
       name: "configure client"
 
   - test:
+      name: setup cephfs mirroring
+      desc: "Enable mirroring, add peer and paths — one-time setup before functional tests"
+      module: cephfs_mirroring.setup_cephfs_mirroring.py
+      abort-on-fail: true
+      clusters:
+        ceph1:
+          config:
+            source_fs: cephfs
+            target_fs: cephfs
+            target_user: mirror_remote
+            target_site_name: remote_site
+
+  - test:
       abort-on-fail: false
       desc: "Validate improved mirroring stats with dual-interface (asok + MGR) checks"
       clusters:
@@ -261,3 +274,15 @@ tests:
       module: cephfs_mirroring.test_cephfs_mirror_tri_interface_92.py
       name: Validate tri-interface consistency for 9.2
       polarion-id: "CEPH-83632819"
+
+  - test:
+      name: teardown cephfs mirroring
+      desc: "Disable mirroring and remove peer — cleanup after all functional tests"
+      module: cephfs_mirroring.teardown_cephfs_mirroring.py
+      abort-on-fail: false
+      clusters:
+        ceph1:
+          config:
+            source_fs: cephfs
+            target_fs: cephfs
+            target_user: mirror_remote
