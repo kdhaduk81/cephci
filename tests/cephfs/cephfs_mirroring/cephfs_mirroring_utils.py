@@ -652,7 +652,8 @@ class CephfsMirroringUtils(object):
         log.info("Get Peer Connection Information")
         log.info("Fetch peer connection information from the source system")
         out, _ = source_clients.exec_command(
-            f"ceph fs snapshot mirror peer_list {source_fs} --format json-pretty"
+            sudo=True,
+            cmd=f"ceph fs snapshot mirror peer_list {source_fs} --format json-pretty",
         )
         try:
             data = json.loads(out)
@@ -798,12 +799,22 @@ class CephfsMirroringUtils(object):
             sudo=True, cmd="ceph fs snapshot mirror daemon status -f json"
         )
         data = json.loads(out)
+        if not data or not isinstance(data, list):
+            raise CommandFailed("Daemon status is empty or invalid JSON")
         filesystem_id = None
-        for filesystem in data[0]["filesystems"]:
-            if filesystem["name"] == fs_name:
-                filesystem_id = filesystem["filesystem_id"]
+        for daemon_entry in data:
+            filesystems = daemon_entry.get("filesystems", [])
+            for filesystem in filesystems:
+                if filesystem.get("name") == fs_name:
+                    filesystem_id = filesystem.get("filesystem_id")
+                    break
+            if filesystem_id is not None:
                 break
         log.info(filesystem_id)
+        if filesystem_id is None:
+            raise CommandFailed(
+                f"Filesystem ID for {fs_name} not found in daemon status"
+            )
         return filesystem_id
 
     @retry(CommandFailed, tries=5, delay=60)
@@ -821,13 +832,21 @@ class CephfsMirroringUtils(object):
             sudo=True, cmd="ceph fs snapshot mirror daemon status -f json"
         )
         data = json.loads(out)
+        if not data or not isinstance(data, list):
+            raise CommandFailed("Daemon status is empty or invalid JSON")
         peer_uuid = None
-        for filesystem in data[0]["filesystems"]:
-            if filesystem["name"] == fs_name:
-                peers = filesystem["peers"]
-                for peer in peers:
-                    peer_uuid = peer["uuid"]
+        for daemon_entry in data:
+            filesystems = daemon_entry.get("filesystems", [])
+            for filesystem in filesystems:
+                if filesystem.get("name") == fs_name:
+                    peers = filesystem.get("peers", [])
+                    for peer in peers:
+                        peer_uuid = peer.get("uuid")
+                        break
+                if peer_uuid:
                     break
+            if peer_uuid:
+                break
         log.info(peer_uuid)
         if not peer_uuid:
             raise CommandFailed("Peer uuid not created yet")
@@ -847,35 +866,41 @@ class CephfsMirroringUtils(object):
         asok_files = {}
         if not isinstance(daemon_names, list):
             daemon_names = [daemon_names]
-        for daemon_name in daemon_names:
-            cmd = f"cd /var/run/ceph/{fsid}/ ; ls -1tr ceph-client.{daemon_name}* | head -n 1 | tr -d '\\n'"
-            if isinstance(cephfs_mirror_node, list):
-                for node in cephfs_mirror_node:
-                    file = node.exec_command(sudo=True, cmd=cmd)
+        try:
+            return self.get_asok_file_with_connectivity_check(
+                cephfs_mirror_node, fsid, daemon_names
+            )
+        except Exception as e:
+            log.warning("get_asok_file fallback due to: %s", e)
+            for daemon_name in daemon_names:
+                cmd = f"cd /var/run/ceph/{fsid}/ ; ls -1tr ceph-client.{daemon_name}* | tail -n 1 | tr -d '\\n'"
+                if isinstance(cephfs_mirror_node, list):
+                    for node in cephfs_mirror_node:
+                        file = node.exec_command(sudo=True, cmd=cmd)
+                        asok_file = file[0].replace("\\n", "")
+                        if asok_file:
+                            hostname = (
+                                node.node.hostname
+                                if hasattr(node, "node")
+                                else node.hostname
+                            )
+                            asok_files[hostname] = [node, asok_file]
+                        log.info(asok_file)
+                else:
+                    file = cephfs_mirror_node.exec_command(sudo=True, cmd=cmd)
                     asok_file = file[0].replace("\\n", "")
                     if asok_file:
                         hostname = (
-                            node.node.hostname
-                            if hasattr(node, "node")
-                            else node.hostname
+                            cephfs_mirror_node.node.hostname
+                            if hasattr(cephfs_mirror_node, "node")
+                            else cephfs_mirror_node.hostname
                         )
-                        asok_files[hostname] = [node, asok_file]
+                        asok_files[hostname] = [
+                            cephfs_mirror_node,
+                            asok_file,
+                        ]
                     log.info(asok_file)
-            else:
-                file = cephfs_mirror_node.exec_command(sudo=True, cmd=cmd)
-                asok_file = file[0].replace("\\n", "")
-                if asok_file:
-                    hostname = (
-                        cephfs_mirror_node.node.hostname
-                        if hasattr(cephfs_mirror_node, "node")
-                        else cephfs_mirror_node.hostname
-                    )
-                    asok_files[hostname] = [
-                        cephfs_mirror_node,
-                        asok_file,
-                    ]
-                log.info(asok_file)
-        return asok_files
+            return asok_files
 
     def get_asok_file_with_connectivity_check(
         self, cephfs_mirror_node, fsid, daemon_names
@@ -934,7 +959,13 @@ class CephfsMirroringUtils(object):
                 asok_basename = asok_file_path.rsplit("/", 1)[-1]
                 test_cmd = f"cd {asok_dir} && ceph --admin-daemon {asok_basename} help"
                 out, err = node.exec_command(sudo=True, cmd=test_cmd, check_ec=False)
-                if out and "fs mirror peer status" in out:
+                # Socket is considered reachable if 'help' succeeds and returns daemon commands
+                if out and (
+                    "fs mirror" in out
+                    or "counter dump" in out
+                    or "version" in out
+                    or "help" in out
+                ):
                     hostname = getattr(
                         getattr(node, "node", node), "hostname", str(node)
                     )
@@ -942,7 +973,9 @@ class CephfsMirroringUtils(object):
                     log.info("Connected to asok: %s on %s", asok_file_path, hostname)
                     break
                 else:
-                    log.warning("Cannot reach asok %s: %s", asok_file_path, err)
+                    log.warning(
+                        "Cannot reach asok %s: %s (err: %s)", asok_file_path, out, err
+                    )
 
         if not accessible_asok_files:
             log.warning("No accessible asok files found")
@@ -1437,6 +1470,81 @@ class CephfsMirroringUtils(object):
         except Exception as e:
             log.error(f"Error during cleanup: {str(e)}")
 
+    def cleanup_target_cluster(
+        self,
+        target_client,
+        target_fs="cephfs",
+        target_mount_dir=None,
+        subvolume_paths=None,
+    ):
+        """
+        Clean up mirrored data, snapshots, and temporary mounts on the target cluster.
+
+        Args:
+            target_client: Client node object on target (ceph2).
+            target_fs (str): Target filesystem name.
+            target_mount_dir (str, optional): Target mount directory if mounted during test.
+            subvolume_paths (list, optional): List of mirrored subvolume/directory paths.
+        """
+        try:
+            log.info("Starting cleanup on target cluster")
+
+            # 1. Unmount and clean up any target client mount directory if passed
+            if target_mount_dir:
+                self.cleanup_target_client(target_client, target_mount_dir)
+
+            # 2. If subvolume paths provided, mount root of target_fs temporarily and delete mirrored data
+            if subvolume_paths:
+                tmp_target_mount = f"/mnt/target_cleanup_{int(time.time())}"
+                log.info(
+                    "Mounting target filesystem to clean up synced data: %s",
+                    tmp_target_mount,
+                )
+                target_client.exec_command(
+                    sudo=True, cmd=f"mkdir -p {tmp_target_mount}", check_ec=False
+                )
+                mount_cmd = (
+                    f"mount -t ceph :{target_fs} {tmp_target_mount} "
+                    f"-o name=admin,fs={target_fs}"
+                )
+                _, err = target_client.exec_command(
+                    sudo=True, cmd=mount_cmd, check_ec=False
+                )
+                if not err or "mounted" in err or "already mounted" in err:
+                    for sv_path in subvolume_paths:
+                        sv_target_full = f"{tmp_target_mount}{sv_path}"
+                        log.info(
+                            "Cleaning up snapshots and data on target for: %s",
+                            sv_target_full,
+                        )
+                        # Remove snapshots on target subvolume first
+                        target_client.exec_command(
+                            sudo=True,
+                            cmd=f"for s in $(ls {sv_target_full}.snap/ 2>/dev/null); do "
+                            f"rmdir {sv_target_full}.snap/$s; done",
+                            check_ec=False,
+                        )
+                        # Clean up regular mirrored files/directories
+                        target_client.exec_command(
+                            sudo=True,
+                            cmd=f"rm -rf {sv_target_full}/*",
+                            check_ec=False,
+                        )
+                    # Unmount and delete temporary mount point
+                    target_client.exec_command(
+                        sudo=True, cmd=f"umount -l {tmp_target_mount}", check_ec=False
+                    )
+                    target_client.exec_command(
+                        sudo=True, cmd=f"rm -rf {tmp_target_mount}", check_ec=False
+                    )
+                else:
+                    log.warning(
+                        "Could not mount target filesystem for deep cleanup: %s", err
+                    )
+            log.info("Target cluster cleanup completed")
+        except Exception as e:
+            log.warning("Target cluster cleanup encountered an error: %s", e)
+
     def deploy_cephfs_mirroring(
         self,
         source_fs,
@@ -1804,10 +1912,10 @@ class CephfsMirroringUtils(object):
         for node_hostname, asok in asok_file.items():
             if not asok[1]:
                 continue
-            command = f"ceph --admin-daemon {asok[1]} counter dump -f json"
-            out, _ = asok[0].exec_command(
-                sudo=True, cmd=f"cd /var/run/ceph/{fsid}/ ; {command}"
-            )
+            asok_basename = asok[1].rsplit("/", 1)[-1]
+            asok_dir = f"/var/run/ceph/{fsid}"
+            command = f"ceph --admin-daemon {asok_basename} counter dump -f json"
+            out, _ = asok[0].exec_command(sudo=True, cmd=f"cd {asok_dir} && {command}")
             data = json.loads(out)
             log.info(f"Output of Metrics Report : {data}")
             return data
@@ -1868,6 +1976,12 @@ class CephfsMirroringUtils(object):
         4. Creates a new snapshot in the source path to inject the sync failure.
         5. Logs the list of snapshots after the failure is injected.
         """
+        # Force-unmount any stale/orphaned FUSE mount left by a previous run
+        # before creating the directory; without this, mkdir -p will hang if a
+        # defunct ceph-fuse process still owns the mount point.
+        target_clients.exec_command(
+            sudo=True, cmd=f"umount -l {target_mount_path}", check_ec=False
+        )
         target_clients.exec_command(sudo=True, cmd=f"mkdir -p {target_mount_path}")
         target_clients.exec_command(
             sudo=True,
@@ -2893,6 +3007,7 @@ def wait_for_idle(
     path,
     timeout=300,
     interval=15,
+    expected_snap_name=None,
 ):
     """Poll asok peer status until path reaches idle state or timeout.
 
@@ -2906,6 +3021,8 @@ def wait_for_idle(
         path (str): Subvolume path to monitor.
         timeout (int): Maximum seconds to wait (default 300).
         interval (int): Poll interval in seconds (default 15).
+        expected_snap_name (str, optional): If provided, requires idle state
+            AND last_synced_snap name matching this snapshot.
 
     Returns:
         dict: Path status at idle state.
@@ -2922,16 +3039,24 @@ def wait_for_idle(
             )
             path_status = peer_status.get(path_key, {})
             state = path_status.get("state", "unknown")
+            last_snap_name = path_status.get("last_synced_snap", {}).get("name")
             log.info(
-                "[wait_for_idle %ds/%ds] path=%s state=%s snaps_synced=%s",
+                "[wait_for_idle %ds/%ds] path=%s state=%s snaps_synced=%s last_synced=%s",
                 elapsed,
                 timeout,
                 path_key,
                 state,
                 path_status.get("snaps_synced"),
+                last_snap_name,
             )
             if state == "idle":
-                return path_status
+                if expected_snap_name is None or last_snap_name == expected_snap_name:
+                    return path_status
+                log.info(
+                    "Path is idle but last_synced_snap is '%s' (waiting for '%s')",
+                    last_snap_name,
+                    expected_snap_name,
+                )
         except Exception as e:
             log.warning("wait_for_idle poll error (will retry): %s", e)
         time.sleep(interval)
@@ -3132,3 +3257,81 @@ def validate_last_synced_snap_schema(last_synced_snap, expected_snap_name=None):
         last_synced_snap.get("sync_bytes"),
     )
     return last_synced_snap
+
+
+# ====================================================================
+# Checkpoint Helper Utilities
+# ====================================================================
+
+
+def checkpoint_add(client, fs_name, path, snap_name, check_ec=True):
+    """
+    Add a checkpoint for a snapshot.
+
+    Args:
+        client: Ceph client object.
+        fs_name (str): Filesystem name.
+        path (str): Subvolume or directory path.
+        snap_name (str): Snapshot name.
+        check_ec (bool): Whether to fail if command returns non-zero.
+
+    Returns:
+        tuple (stdout, stderr) or stdout string.
+    """
+    cmd = f"ceph fs snapshot mirror checkpoint add {fs_name} {path} {snap_name}"
+    out, err = client.exec_command(sudo=True, cmd=cmd, check_ec=check_ec)
+    log.info(
+        f"checkpoint add ({snap_name}): stdout='{out.strip()}', stderr='{err.strip()}'"
+    )
+    return out.strip() if check_ec else (out.strip(), err.strip())
+
+
+def checkpoint_ls(client, fs_name, path, check_ec=True):
+    """
+    List checkpoints for a path.
+
+    Args:
+        client: Ceph client object.
+        fs_name (str): Filesystem name.
+        path (str): Subvolume or directory path.
+        check_ec (bool): Whether to fail if command returns non-zero.
+
+    Returns:
+        list: List of checkpoint dicts if check_ec=True, else (list/dict, err).
+    """
+    cmd = f"ceph fs snapshot mirror checkpoint ls {fs_name} {path} -f json"
+    out, err = client.exec_command(sudo=True, cmd=cmd, check_ec=check_ec)
+    log.info(
+        f"checkpoint ls raw output: stdout='{out.strip()}', stderr='{err.strip()}'"
+    )
+    if not check_ec:
+        return out.strip(), err.strip()
+    try:
+        data = json.loads(out)
+        if isinstance(data, dict):
+            return data.get("checkpoints", [])
+        return data if isinstance(data, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
+def checkpoint_rm(client, fs_name, path, snap_name, check_ec=True):
+    """
+    Remove a checkpoint for a snapshot.
+
+    Args:
+        client: Ceph client object.
+        fs_name (str): Filesystem name.
+        path (str): Subvolume or directory path.
+        snap_name (str): Snapshot name.
+        check_ec (bool): Whether to fail if command returns non-zero.
+
+    Returns:
+        tuple (stdout, stderr) or stdout string.
+    """
+    cmd = f"ceph fs snapshot mirror checkpoint remove {fs_name} {path} {snap_name}"
+    out, err = client.exec_command(sudo=True, cmd=cmd, check_ec=check_ec)
+    log.info(
+        f"checkpoint remove ({snap_name}): stdout='{out.strip()}', stderr='{err.strip()}'"
+    )
+    return out.strip() if check_ec else (out.strip(), err.strip())
