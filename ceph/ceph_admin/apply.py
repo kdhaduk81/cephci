@@ -53,7 +53,6 @@ class ApplyMixin:
                         label: rgw_south
                         nodes:              # A list of strings that would looked up
                             - node1
-                        host_pattern: "*"   # glob pattern matched against hostnames
                         limit: 3            # no of daemons
                         sep: " "            # separator to be used for placements
                     dry-run: true
@@ -85,10 +84,6 @@ class ApplyMixin:
 
             if "label" in placement:
                 node_names.append(f"label:{placement['label']}")
-
-            if "host_pattern" in placement:
-                pattern = placement["host_pattern"]
-                node_names.append(pattern)
 
             if "nodes" in placement:
                 nodes = placement.get("nodes")
