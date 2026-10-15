@@ -2100,6 +2100,12 @@ class CephfsMirroringUtils(object):
         4. Creates a new snapshot in the source path to inject the sync failure.
         5. Logs the list of snapshots after the failure is injected.
         """
+        # Force-unmount any stale/orphaned FUSE mount left by a previous run
+        # before creating the directory; without this, mkdir -p will hang if a
+        # defunct ceph-fuse process still owns the mount point.
+        target_clients.exec_command(
+            sudo=True, cmd=f"umount -l {target_mount_path}", check_ec=False
+        )
         target_clients.exec_command(sudo=True, cmd=f"mkdir -p {target_mount_path}")
         target_clients.exec_command(
             sudo=True,

@@ -1281,6 +1281,18 @@ def run(ceph_cluster, **kw):
                         check_ec=False,
                     )
 
+            log.info("Unmount the target conflict mount path used in Scenario 12")
+            target_clients[0].exec_command(
+                sudo=True,
+                cmd=f"umount -l {target_mount_path_s12}",
+                check_ec=False,
+            )
+            target_clients[0].exec_command(
+                sudo=True,
+                cmd=f"rm -rf {target_mount_path_s12}",
+                check_ec=False,
+            )
+
             log.info("Unmount the paths")
             for mdir in [kernel_mounting_dir, fuse_mounting_dir]:
                 source_clients[0].exec_command(
