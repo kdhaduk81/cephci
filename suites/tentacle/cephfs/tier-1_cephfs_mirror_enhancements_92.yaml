@@ -17,7 +17,8 @@
 #
 # Covers:
 #   - Improved Stats: R1, R2, R5, R7, R12, R16 (dual asok + MGR validation)
-#   - Disruptive Ops: R8 (sync failure, recovery), S9 (mid-sync daemon restart)
+#   - Disruptive Ops: R8 (sync failure, recovery) — S9 (mid-sync daemon restart) is
+#                    covered inside test_cephfs_mirror_disruptive_ops.py, no separate step needed
 #   - Table 0: Asok Metrics — 12 scenarios (schema, sync-mode, ETA, crawl,
 #                throughput, failure, zero-file, snapdiff, monotonicity)
 #   - Table 1: MGR Interface — 10 scenarios (status, OMAP, cache, stale,
