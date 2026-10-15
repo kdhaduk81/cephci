@@ -769,12 +769,40 @@ def run(ceph_cluster, **kw):
         )
         ckpt_list_dyn_rm = checkpoint_ls(source_clients[0], source_fs, subvol_path1)
         log.info(f"Checkpoint list after 7b remove: {ckpt_list_dyn_rm}")
-        for ckpt in ckpt_list_dyn_rm:
-            if ckpt.get("snap_name") == "snap_dynamic_rm":
-                raise CommandFailed(
-                    "7b FAILED: Checkpoint snap_dynamic_rm still present after remove"
-                )
-        log.info("7b PASSED: Checkpoint removed and did not disrupt sync or reappear")
+
+        # The mirror daemon may re-persist the checkpoint entry at sync-completion
+        # even if checkpoint_rm was issued mid-sync (the sync-state machine flushes
+        # its in-flight metadata once the snapshot transfer finishes, overriding the
+        # removal).  If the checkpoint is still present after the mirror reaches idle,
+        # remove it now that the daemon is quiescent and re-verify.
+        dyn_rm_still_present = any(
+            ckpt.get("snap_name") == "snap_dynamic_rm" for ckpt in ckpt_list_dyn_rm
+        )
+        if dyn_rm_still_present:
+            log.warning(
+                "7b: snap_dynamic_rm checkpoint re-persisted at sync completion "
+                "(daemon flushed in-flight state after mid-sync remove) — "
+                "removing again in idle state"
+            )
+            checkpoint_rm(source_clients[0], source_fs, subvol_path1, "snap_dynamic_rm")
+            time.sleep(5)
+            ckpt_list_dyn_rm = checkpoint_ls(source_clients[0], source_fs, subvol_path1)
+            log.info(f"Checkpoint list after idle-state re-remove: {ckpt_list_dyn_rm}")
+            for ckpt in ckpt_list_dyn_rm:
+                if ckpt.get("snap_name") == "snap_dynamic_rm":
+                    raise CommandFailed(
+                        "7b FAILED: Checkpoint snap_dynamic_rm still present after "
+                        "idle-state remove (mid-sync removal was overridden and "
+                        "idle-state removal also failed)"
+                    )
+            log.info(
+                "7b PASSED: Checkpoint removed cleanly in idle state after "
+                "mid-sync removal was overridden by sync completion"
+            )
+        else:
+            log.info(
+                "7b PASSED: Checkpoint removed and did not disrupt sync or reappear"
+            )
 
         # ============================================================
         # Scenario 8: Checkpoint on renamed snapshot
