@@ -56,6 +56,7 @@ def run(ceph_cluster, **kw):
      5. Prometheus scrape end-to-end
      6. Multiple daemons/filesystems isolation
      7. Legacy counter groups still present
+     8. Counter leak soak test (continuous directory add/remove churn)
 
     Returns 0 on success, 1 on failure, -1 if skipped.
     """
@@ -688,6 +689,58 @@ def run(ceph_cluster, **kw):
                 f"Legacy peers counter: snaps_synced={counter.get('snaps_synced')}"
             )
 
+        # ============================================================
+        # Scenario 8: Counter leak soak test
+        # ============================================================
+        log.info("=" * 60)
+        log.info("Scenario 8: Counter leak soak test (directory churn)")
+        log.info("=" * 60)
+
+        data_pre_soak = fs_mirroring_utils.get_cephfs_mirror_counters(
+            cephfs_mirror_node, fsid, asok_file
+        )
+        baseline_dir_entries = len(data_pre_soak.get("cephfs_mirror_directory", []))
+        log.info(
+            "Baseline cephfs_mirror_directory entry count: %d", baseline_dir_entries
+        )
+
+        soak_path = "/soak_leak_test_dir/"
+        log.info("Running 50-iteration add/remove directory churn loop")
+        for iter_i in range(1, 51):
+            source_clients[0].exec_command(
+                sudo=True,
+                cmd=f"ceph fs snapshot mirror add {source_fs} {soak_path}",
+                check_ec=False,
+            )
+            time.sleep(1)
+            source_clients[0].exec_command(
+                sudo=True,
+                cmd=f"ceph fs snapshot mirror remove {source_fs} {soak_path}",
+                check_ec=False,
+            )
+            time.sleep(1)
+            if iter_i % 10 == 0:
+                log.info("Completed %d/50 churn iterations", iter_i)
+
+        time.sleep(5)
+        data_post_soak = fs_mirroring_utils.get_cephfs_mirror_counters(
+            cephfs_mirror_node, fsid, asok_file
+        )
+        post_soak_dir_entries = len(data_post_soak.get("cephfs_mirror_directory", []))
+        log.info(
+            "Post-soak cephfs_mirror_directory entry count: %d (baseline: %d)",
+            post_soak_dir_entries,
+            baseline_dir_entries,
+        )
+
+        if post_soak_dir_entries != baseline_dir_entries:
+            raise CommandFailed(
+                f"Scenario 8 FAILED: Counter leak detected! "
+                f"Expected {baseline_dir_entries} entries, got {post_soak_dir_entries}"
+            )
+
+        log.info("Scenario 8 PASSED: Zero counter leaks after 50 churn iterations")
+
         log.info("All perf dump scenarios passed")
 
         log.info("Reset tick interval to default")
@@ -778,6 +831,13 @@ def run(ceph_cluster, **kw):
                 source_fs,
                 subvol_group_name,
                 check_ec=False,
+            )
+
+            log.info("Clean up mirrored data and snapshots on target cluster")
+            fs_mirroring_utils.cleanup_target_cluster(
+                target_clients[0],
+                target_fs=target_fs,
+                subvolume_paths=subvolume_paths,
             )
         except Exception as cleanup_err:
             log.warning(f"Cleanup encountered an error: {cleanup_err}")

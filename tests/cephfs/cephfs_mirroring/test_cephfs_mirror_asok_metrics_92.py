@@ -388,6 +388,13 @@ def run(ceph_cluster, **kw):
         log.info("Scenario 3: Delta sync — mode, monotonicity, snapdiff")
         log.info("=" * 60)
 
+        log.info("Clean up full sync data before starting delta sync")
+        source_clients[0].exec_command(
+            sudo=True,
+            cmd="rm -f %sfulldata" % mount_path1,
+            check_ec=False,
+        )
+
         log.info("Create baseline files: 10 small (1 MiB) + 1 large (64 MiB)")
         source_clients[0].exec_command(
             sudo=True,
