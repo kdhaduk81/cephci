@@ -17,7 +17,7 @@ log = Log(__name__)
 
 def run(ceph_cluster, **kw):
     """
-    CEPH-83575002 - CephFS mirroring disruptive operations
+    CEPH-83632752 - CephFS mirroring disruptive operations
 
     Validates metrics resilience across all interfaces (Asok + MGR) under disruptive
     conditions — sync failure, daemon restart, MGR failover, and MGR restart during failure.

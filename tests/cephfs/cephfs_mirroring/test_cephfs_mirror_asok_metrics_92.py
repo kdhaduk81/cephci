@@ -84,7 +84,7 @@ def _wait_peer_counter_gt(
 
 def run(ceph_cluster, **kw):
     """
-    CEPH-83632744 - Validate CephFS mirroring asok metrics for 9.2 enhancements.
+    CEPH-83632745 - Validate CephFS mirroring asok metrics for 9.2 enhancements.
 
     Consolidated scenarios:
      1. Schema verification (field presence)
