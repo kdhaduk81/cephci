@@ -36,7 +36,7 @@ def parse_bytes_str(bytes_str):
 
 def run(ceph_cluster, **kw):
     """
-    CEPH-83575001 - Validate improved CephFS mirroring stats (9.2 metrics)
+    CEPH-83632757 - Validate improved CephFS mirroring stats (9.2 metrics)
 
     Covers functional and acceptance scenarios from the "Improve Mirroring Stats" test plan:
     - Schema validation + stats during sync and idle (asok + MGR)

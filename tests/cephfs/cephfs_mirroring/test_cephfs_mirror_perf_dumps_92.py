@@ -46,7 +46,7 @@ def ensure_prometheus_enabled(client):
 
 def run(ceph_cluster, **kw):
     """
-    CEPH-83632798 - Validate enhanced cephfs_mirror_directory perf counters for 9.2.
+    CEPH-83632807 - Validate enhanced cephfs_mirror_directory perf counters for 9.2.
 
     Covers functional tests:
      1. Validate cephfs_mirror_directory counter group + label validation (combined)

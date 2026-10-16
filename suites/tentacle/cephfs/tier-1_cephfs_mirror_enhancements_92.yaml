@@ -205,7 +205,7 @@ tests:
             name: Validate improved mirroring stats for 9.2
       module: cephfs_mirroring.test_cephfs_mirror_improved_stats.py
       name: Validate improved mirroring stats for 9.2
-      polarion-id: "CEPH-83575001"
+      polarion-id: "CEPH-83632757"
 
   - test:
       abort-on-fail: false
@@ -218,7 +218,7 @@ tests:
             name: Validate mirroring disruptive ops for 9.2
       module: cephfs_mirroring.test_cephfs_mirror_disruptive_ops.py
       name: Validate mirroring disruptive ops for 9.2
-      polarion-id: "CEPH-83575002"
+      polarion-id: "CEPH-83632752"
 
   - test:
       abort-on-fail: false
@@ -229,7 +229,7 @@ tests:
             name: Validate asok mirroring metrics for 9.2 enhancements
       module: cephfs_mirroring.test_cephfs_mirror_asok_metrics_92.py
       name: Validate asok mirroring metrics for 9.2 enhancements
-      polarion-id: "CEPH-83632744"
+      polarion-id: "CEPH-83632745"
 
   - test:
       abort-on-fail: false
@@ -263,7 +263,7 @@ tests:
             name: Validate enhanced perf dump counters for 9.2
       module: cephfs_mirroring.test_cephfs_mirror_perf_dumps_92.py
       name: Validate enhanced perf dump counters for 9.2
-      polarion-id: "CEPH-83632798"
+      polarion-id: "CEPH-83632807"
 
   # Table 4: Tri-Interface Consistency — 4 functional scenarios
   - test:
