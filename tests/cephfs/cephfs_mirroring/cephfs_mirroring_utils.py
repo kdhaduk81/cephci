@@ -1504,7 +1504,7 @@ class CephfsMirroringUtils(object):
                     sudo=True, cmd=f"mkdir -p {tmp_target_mount}", check_ec=False
                 )
                 mount_cmd = (
-                    f"mount -t ceph :{target_fs} {tmp_target_mount} "
+                    f"mount -t ceph :/ {tmp_target_mount} "
                     f"-o name=admin,fs={target_fs}"
                 )
                 _, err = target_client.exec_command(
