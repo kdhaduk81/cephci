@@ -652,7 +652,6 @@ class CephfsMirroringUtils(object):
         log.info("Get Peer Connection Information")
         log.info("Fetch peer connection information from the source system")
         out, _ = source_clients.exec_command(
-            sudo=True,
             cmd=f"ceph fs snapshot mirror peer_list {source_fs} --format json-pretty",
         )
         try:
@@ -799,17 +798,10 @@ class CephfsMirroringUtils(object):
             sudo=True, cmd="ceph fs snapshot mirror daemon status -f json"
         )
         data = json.loads(out)
-        if not data or not isinstance(data, list):
-            raise CommandFailed("Daemon status is empty or invalid JSON")
         filesystem_id = None
-        for daemon_entry in data:
-            filesystems = daemon_entry.get("filesystems", [])
-            for filesystem in filesystems:
-                if filesystem.get("name") == fs_name:
-                    filesystem_id = filesystem.get("filesystem_id")
-                    break
-            if filesystem_id is not None:
-                break
+        for filesystem in data[0]["filesystems"]:
+            if filesystem["name"] == fs_name:
+                filesystem_id = filesystem["filesystem_id"]
         log.info(filesystem_id)
         if filesystem_id is None:
             raise CommandFailed(
@@ -832,21 +824,12 @@ class CephfsMirroringUtils(object):
             sudo=True, cmd="ceph fs snapshot mirror daemon status -f json"
         )
         data = json.loads(out)
-        if not data or not isinstance(data, list):
-            raise CommandFailed("Daemon status is empty or invalid JSON")
         peer_uuid = None
-        for daemon_entry in data:
-            filesystems = daemon_entry.get("filesystems", [])
-            for filesystem in filesystems:
-                if filesystem.get("name") == fs_name:
-                    peers = filesystem.get("peers", [])
-                    for peer in peers:
-                        peer_uuid = peer.get("uuid")
-                        break
-                if peer_uuid:
-                    break
-            if peer_uuid:
-                break
+        for filesystem in data[0]["filesystems"]:
+            if filesystem["name"] == fs_name:
+                peers = filesystem["peers"]
+                for peer in peers:
+                    peer_uuid = peer["uuid"]
         log.info(peer_uuid)
         if not peer_uuid:
             raise CommandFailed("Peer uuid not created yet")
@@ -866,41 +849,32 @@ class CephfsMirroringUtils(object):
         asok_files = {}
         if not isinstance(daemon_names, list):
             daemon_names = [daemon_names]
-        try:
-            return self.get_asok_file_with_connectivity_check(
-                cephfs_mirror_node, fsid, daemon_names
-            )
-        except Exception as e:
-            log.warning("get_asok_file fallback due to: %s", e)
-            for daemon_name in daemon_names:
-                cmd = f"cd /var/run/ceph/{fsid}/ ; ls -1tr ceph-client.{daemon_name}* | tail -n 1 | tr -d '\\n'"
-                if isinstance(cephfs_mirror_node, list):
-                    for node in cephfs_mirror_node:
-                        file = node.exec_command(sudo=True, cmd=cmd)
-                        asok_file = file[0].replace("\\n", "")
-                        if asok_file:
-                            hostname = (
-                                node.node.hostname
-                                if hasattr(node, "node")
-                                else node.hostname
-                            )
-                            asok_files[hostname] = [node, asok_file]
-                        log.info(asok_file)
-                else:
-                    file = cephfs_mirror_node.exec_command(sudo=True, cmd=cmd)
+        for daemon_name in daemon_names:
+            cmd = f"cd /var/run/ceph/{fsid}/ ; ls -1tr ceph-client.{daemon_name}* | tail -n 1 | tr -d '\\n'"
+            if isinstance(cephfs_mirror_node, list):
+                for node in cephfs_mirror_node:
+                    file = node.exec_command(sudo=True, cmd=cmd)
                     asok_file = file[0].replace("\\n", "")
                     if asok_file:
                         hostname = (
-                            cephfs_mirror_node.node.hostname
-                            if hasattr(cephfs_mirror_node, "node")
-                            else cephfs_mirror_node.hostname
+                            node.node.hostname
+                            if hasattr(node, "node")
+                            else node.hostname
                         )
-                        asok_files[hostname] = [
-                            cephfs_mirror_node,
-                            asok_file,
-                        ]
+                        asok_files[hostname] = [node, asok_file]
                     log.info(asok_file)
-            return asok_files
+            else:
+                file = cephfs_mirror_node.exec_command(sudo=True, cmd=cmd)
+                asok_file = file[0].replace("\\n", "")
+                if asok_file:
+                    hostname = (
+                        cephfs_mirror_node.node.hostname
+                        if hasattr(cephfs_mirror_node, "node")
+                        else cephfs_mirror_node.hostname
+                    )
+                    asok_files[hostname] = [cephfs_mirror_node, asok_file]
+                log.info(asok_file)
+        return asok_files
 
     def get_asok_file_with_connectivity_check(
         self, cephfs_mirror_node, fsid, daemon_names
@@ -1489,58 +1463,38 @@ class CephfsMirroringUtils(object):
         try:
             log.info("Starting cleanup on target cluster")
 
-            # 1. Unmount and clean up any target client mount directory if passed
             if target_mount_dir:
                 self.cleanup_target_client(target_client, target_mount_dir)
 
-            # 2. If subvolume paths provided, mount root of target_fs temporarily and delete mirrored data
             if subvolume_paths:
                 tmp_target_mount = f"/mnt/target_cleanup_{int(time.time())}"
-                log.info(
-                    "Mounting target filesystem to clean up synced data: %s",
-                    tmp_target_mount,
-                )
+                log.info("Mounting target filesystem for cleanup: %s", tmp_target_mount)
                 target_client.exec_command(
                     sudo=True, cmd=f"mkdir -p {tmp_target_mount}", check_ec=False
                 )
-                mount_cmd = (
-                    f"mount -t ceph :/ {tmp_target_mount} "
-                    f"-o name=admin,fs={target_fs}"
+                target_client.exec_command(
+                    sudo=True,
+                    cmd=f"mount -t ceph :/ {tmp_target_mount} -o name=admin,fs={target_fs}",
+                    check_ec=False,
                 )
-                _, err = target_client.exec_command(
-                    sudo=True, cmd=mount_cmd, check_ec=False
-                )
-                if not err or "mounted" in err or "already mounted" in err:
-                    for sv_path in subvolume_paths:
-                        sv_target_full = f"{tmp_target_mount}{sv_path}"
-                        log.info(
-                            "Cleaning up snapshots and data on target for: %s",
-                            sv_target_full,
-                        )
-                        # Remove snapshots on target subvolume first
-                        target_client.exec_command(
-                            sudo=True,
-                            cmd=f"for s in $(ls {sv_target_full}.snap/ 2>/dev/null); do "
-                            f"rmdir {sv_target_full}.snap/$s; done",
-                            check_ec=False,
-                        )
-                        # Clean up regular mirrored files/directories
-                        target_client.exec_command(
-                            sudo=True,
-                            cmd=f"rm -rf {sv_target_full}/*",
-                            check_ec=False,
-                        )
-                    # Unmount and delete temporary mount point
+                for sv_path in subvolume_paths:
+                    sv_target_full = f"{tmp_target_mount}{sv_path}"
+                    log.info("Cleaning up target path: %s", sv_target_full)
                     target_client.exec_command(
-                        sudo=True, cmd=f"umount -l {tmp_target_mount}", check_ec=False
+                        sudo=True,
+                        cmd=f"for s in $(ls {sv_target_full}.snap/ 2>/dev/null); do "
+                        f"rmdir {sv_target_full}.snap/$s; done",
+                        check_ec=False,
                     )
                     target_client.exec_command(
-                        sudo=True, cmd=f"rm -rf {tmp_target_mount}", check_ec=False
+                        sudo=True, cmd=f"rm -rf {sv_target_full}/*", check_ec=False
                     )
-                else:
-                    log.warning(
-                        "Could not mount target filesystem for deep cleanup: %s", err
-                    )
+                target_client.exec_command(
+                    sudo=True, cmd=f"umount -l {tmp_target_mount}", check_ec=False
+                )
+                target_client.exec_command(
+                    sudo=True, cmd=f"rm -rf {tmp_target_mount}", check_ec=False
+                )
             log.info("Target cluster cleanup completed")
         except Exception as e:
             log.warning("Target cluster cleanup encountered an error: %s", e)
