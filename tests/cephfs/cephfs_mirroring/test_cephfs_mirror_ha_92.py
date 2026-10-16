@@ -1,6 +1,8 @@
 import time
 import traceback
 
+from looseversion import LooseVersion
+
 from tests.cephfs.cephfs_mirroring.cephfs_mirroring_utils import (
     CephfsMirroringUtils,
     checkpoint_add,
@@ -49,10 +51,11 @@ def run(ceph_cluster, **kw):
         0 on success, 1 on failure, -1 if skipped.
     """
     config = kw.get("config") or {}
-    if CephfsMirroringUtils.skip_if_rhcs_below(config):
+    build = config.get("build", config.get("rhbuild"))
+    if not build or LooseVersion(build.split("-")[0]) < LooseVersion("9.2"):
         log.info(
-            "Skipping test: requires Ceph version >= 9.2 (rhbuild=%s)",
-            config.get("rhbuild"),
+            "Skipping test: requires Ceph version >= 9.2 (build=%s)",
+            build,
         )
         return -1
 
@@ -64,7 +67,6 @@ def run(ceph_cluster, **kw):
         fs_mirroring_utils = CephfsMirroringUtils(
             ceph_cluster_dict.get("ceph1"), ceph_cluster_dict.get("ceph2")
         )
-        build = config.get("build", config.get("rhbuild"))
         source_clients = ceph_cluster_dict.get("ceph1").get_ceph_objects("client")
         target_clients = ceph_cluster_dict.get("ceph2").get_ceph_objects("client")
         cephfs_mirror_nodes = ceph_cluster_dict.get("ceph1").get_ceph_objects(
