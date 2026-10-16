@@ -155,7 +155,7 @@ def run(ceph_cluster, **kw):
         mount_path2 = f"{fuse_mounting_dir}{subvol_path2}"
 
         log.info("Clean up any leftover snapshots from previous runs")
-        for snap in ["snap_mgr1", "snap_cleanup"]:
+        for snap in ["snap_mgr1", "snap_cleanup", "snap_mgr_failover"]:
             source_clients[0].exec_command(
                 sudo=True, cmd=f"rmdir {mount_path1}.snap/{snap}", check_ec=False
             )
@@ -1258,6 +1258,7 @@ def run(ceph_cluster, **kw):
                 "snap_tick2",
                 "snap_cache",
                 "snap_cleanup",
+                "snap_mgr_failover",
             ]
             snap_mount_paths = [
                 f"{kernel_mounting_dir}{subvolume_paths[0]}",
