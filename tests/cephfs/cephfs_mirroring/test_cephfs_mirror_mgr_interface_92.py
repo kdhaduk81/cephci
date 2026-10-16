@@ -1059,6 +1059,13 @@ def run(ceph_cluster, **kw):
         mount_path1 = f"{kernel_mounting_dir}{subvol_path1}"
         snap_mgr_failover = "snap_mgr_failover"
 
+        log.info("Remove snap_mgr_failover if it exists from a previous partial run")
+        source_clients[0].exec_command(
+            sudo=True,
+            cmd=f"rmdir {mount_path1}.snap/{snap_mgr_failover}",
+            check_ec=False,
+        )
+
         log.info("Write 5 GiB data for MGR failover scenario")
         source_clients[0].exec_command(
             sudo=True,
