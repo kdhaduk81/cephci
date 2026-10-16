@@ -209,7 +209,9 @@ tests:
 
   - test:
       abort-on-fail: false
-      desc: "Validate sync failure and mid-sync daemon restart do not corrupt metrics"
+      desc: "Validate metrics resilience under disruptive conditions: sync failure,
+        daemon restart mid-sync, mirror failure + MGR restart, and MGR failover
+        during active sync (Phases 1-4)"
       clusters:
         ceph1:
           config:

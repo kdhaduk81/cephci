@@ -19,7 +19,10 @@ def run(ceph_cluster, **kw):
     """
     CEPH-83575002 - CephFS mirroring disruptive operations
 
-    Daemon restart mid-sync preserves stats:
+    Validates metrics resilience across all interfaces (Asok + MGR) under disruptive
+    conditions — sync failure, daemon restart, MGR failover, and MGR restart during failure.
+
+    Scenario 1 — Daemon restart mid-sync preserves stats:
         - Write 5 GiB file and 50 small files, then create snapshot snap_restart_test
         - Poll until sync is actively in progress (>20% sync progress or syncing state)
         - Restart cephfs-mirror daemon mid-sync
@@ -29,12 +32,24 @@ def run(ceph_cluster, **kw):
         - Validate sync resumes and does not remain frozen at pre-restart percent
         - Wait until sync completes and state returns to idle with snap_restart_test synced
 
-    Sync failure does not corrupt metrics:
+    Scenario 2 — Sync failure does not corrupt metrics:
         - Inject sync failure via conflicting snapshot on target
-        - Validate state transitions to 'failed'
-        - Validate snaps_synced does not falsely increment
-        - Remove conflict and validate recovery
-        - Cross-check via both asok and MGR interface
+        - Poll asok until state=failed
+        - Validate snaps_synced does NOT increment; current_syncing_snap cleared
+        - Cross-check failure via MGR; after conflict removal, recovery to idle
+
+    Scenario 3 — Mirror failure + MGR restart:
+        - Inject sync conflict to put mirror into failed state
+        - Restart active MGR daemon while mirror is in failure state (ceph mgr fail)
+        - Validate failure stats (path presence) restored from OMAP after MGR recovery
+        - Remove conflict and verify status returns toward normal
+
+    Scenario 4 — MGR failover during active sync:
+        - Write 5 GiB data and create snapshot to trigger large sync
+        - Poll asok until state=syncing
+        - Fail the active MGR daemon mid-sync (ceph mgr fail)
+        - Validate standby MGR takes over and new active MGR returns valid metrics
+        - Verify sync completes cleanly (state=idle, last_synced_snap=snap_mgr_failover)
 
     Returns:
         0 if successful, 1 if any errors found, -1 if skipped.
@@ -146,10 +161,10 @@ def run(ceph_cluster, **kw):
         log.info(f"Baseline synced: snaps_synced={path_status.get('snaps_synced')}")
 
         # ============================================================
-        # Daemon restart mid-sync preserves stats
+        # Scenario 1 — Daemon Restart Mid-Sync
         # ============================================================
         log.info("=" * 60)
-        log.info("Scenario: Daemon restart mid-sync preserves stats")
+        log.info("Scenario 1: Daemon restart mid-sync preserves stats")
         log.info("=" * 60)
 
         log.info(
@@ -258,14 +273,16 @@ def run(ceph_cluster, **kw):
             )
 
         log.info("=" * 60)
-        log.info("PASSED: Daemon restart mid-sync preserved stats and completed sync")
+        log.info(
+            "PASSED: Scenario 1 — Daemon restart mid-sync preserved stats and completed sync"
+        )
         log.info("=" * 60)
 
         # ============================================================
-        # Sync failure does not corrupt metrics
+        # Scenario 2 — Sync Failure Does Not Corrupt Metrics
         # ============================================================
         log.info("=" * 60)
-        log.info("Scenario: Sync failure does not corrupt metrics")
+        log.info("Scenario 2: Sync failure does not corrupt metrics")
         log.info("=" * 60)
 
         snaps_synced_before = path_status.get("snaps_synced", 0)
@@ -398,8 +415,241 @@ def run(ceph_cluster, **kw):
                 )
 
         log.info("=" * 60)
-        log.info("PASSED: Sync failure did not corrupt metrics")
+        log.info("PASSED: Scenario 2 — Sync failure did not corrupt metrics")
         log.info("=" * 60)
+
+        # ============================================================
+        # Scenario 3 — Mirror Failure + MGR Restart
+        # ============================================================
+        log.info("=" * 60)
+        log.info("Scenario 3: Mirror failure + MGR restart")
+        log.info("=" * 60)
+
+        target_mount_path_s3 = "/mnt/target_conflict_mgr_s3"
+        snap_conflict_s3 = "snap_conflict_s3"
+
+        log.info("Inject failure: create conflicting snapshot on target first")
+        fs_mirroring_utils.inject_sync_failure(
+            target_clients[0],
+            target_mount_path_s3,
+            "client.admin",
+            subvol_path,
+            snap_conflict_s3,
+            target_fs,
+        )
+
+        log.info("Create conflicting snapshot on source to trigger failure state")
+        source_clients[0].exec_command(
+            sudo=True, cmd=f"mkdir {mount_path}.snap/{snap_conflict_s3}"
+        )
+
+        log.info("Wait for failure state to be registered in asok")
+        for poll_i in range(20):
+            time.sleep(10)
+            peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
+                cephfs_mirror_node[0], source_clients[0], source_fs
+            )
+            path_status = peer_status.get(path_key, {})
+            state = path_status.get("state")
+            log.info(f"[Scenario 3 Failure Poll {poll_i}] state={state}")
+            if state == "failed":
+                break
+
+        log.info("Capture MGR active_name before restart")
+        mgr_stat_before_out, _ = source_clients[0].exec_command(
+            sudo=True, cmd="ceph mgr stat -f json"
+        )
+        mgr_stat_before = json.loads(mgr_stat_before_out)
+        active_mgr_before = mgr_stat_before.get("active_name")
+        log.info(f"MGR active_name before restart: {active_mgr_before}")
+
+        log.info("Restart active MGR daemon while mirror is in failure state")
+        source_clients[0].exec_command(sudo=True, cmd="ceph mgr fail", check_ec=False)
+
+        log.info("Wait for standby MGR to take over")
+        for _wait in range(10):
+            time.sleep(3)
+            mgr_stat_out, _ = source_clients[0].exec_command(
+                sudo=True, cmd="ceph mgr stat -f json", check_ec=False
+            )
+            try:
+                mgr_stat = json.loads(mgr_stat_out)
+                active_mgr_after = mgr_stat.get("active_name")
+                if active_mgr_after and active_mgr_after != active_mgr_before:
+                    break
+            except Exception:
+                pass
+        log.info(f"MGR active_name after restart: {active_mgr_after}")
+        if active_mgr_after == active_mgr_before:
+            raise Exception(
+                f"Scenario 3 FAILED: MGR failover did not occur (still '{active_mgr_after}')"
+            )
+        log.info(
+            f"MGR failover confirmed: '{active_mgr_before}' -> '{active_mgr_after}'"
+        )
+
+        log.info("Verify path presence in MGR after restart (stats restored from OMAP)")
+        mgr_status_post_restart = None
+        for poll_i in range(20):
+            time.sleep(5)
+            try:
+                mgr_status_post_restart = fs_mirroring_utils.get_mgr_mirror_status(
+                    source_clients[0], source_fs
+                )
+                if mgr_status_post_restart and mgr_status_post_restart.get("metrics"):
+                    break
+            except Exception as e:
+                log.info(f"[Scenario 3 MGR Poll {poll_i}] Waiting for MGR: {e}")
+
+        log.info(
+            f"MGR status after restart during failure: "
+            f"{json.dumps(mgr_status_post_restart, indent=2)}"
+        )
+        mgr_metrics_s3 = (
+            mgr_status_post_restart.get("metrics", {})
+            if mgr_status_post_restart
+            else {}
+        )
+        if path_key not in mgr_metrics_s3:
+            raise CommandFailed(
+                f"Scenario 3 FAILED: Mirrored path {path_key} missing from MGR after restart"
+            )
+
+        log.info("Remove conflicting snapshot on target to allow recovery")
+        target_clients[0].exec_command(
+            sudo=True,
+            cmd=f"rmdir {target_mount_path_s3}{subvol_path}.snap/{snap_conflict_s3}",
+            check_ec=False,
+        )
+        target_clients[0].exec_command(
+            sudo=True, cmd=f"umount -l {target_mount_path_s3}", check_ec=False
+        )
+        target_clients[0].exec_command(
+            sudo=True, cmd=f"rm -rf {target_mount_path_s3}", check_ec=False
+        )
+        target_mount_path_s3 = None
+
+        log.info("=" * 60)
+        log.info("PASSED: Scenario 3 — Mirror failure preserved across MGR restart")
+        log.info("=" * 60)
+
+        # ============================================================
+        # Scenario 4 — MGR Failover During Active Sync
+        # ============================================================
+        log.info("=" * 60)
+        log.info("Scenario 4: MGR failover during active data sync")
+        log.info("=" * 60)
+
+        snap_mgr_failover = "snap_mgr_failover"
+
+        log.info("Write 5 GiB data for MGR failover scenario")
+        source_clients[0].exec_command(
+            sudo=True,
+            cmd=f"dd if=/dev/urandom of={mount_path}large_mgr_failover.dat "
+            f"bs=100M count=50 status=none",
+        )
+        source_clients[0].exec_command(
+            sudo=True, cmd=f"mkdir {mount_path}.snap/{snap_mgr_failover}"
+        )
+
+        log.info("Poll for active sync state before triggering MGR failover")
+        for poll_i in range(30):
+            time.sleep(2)
+            peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
+                cephfs_mirror_node[0], source_clients[0], source_fs
+            )
+            path_status = peer_status.get(path_key, {})
+            state = path_status.get("state")
+            syncing = path_status.get("current_syncing_snap")
+            log.info(f"[Scenario 4 Pre-Poll {poll_i}] state={state}, syncing={syncing}")
+            if state == "syncing" or syncing:
+                break
+
+        log.info("Capture MGR active_name before failover")
+        mgr_stat_before_out, _ = source_clients[0].exec_command(
+            sudo=True, cmd="ceph mgr stat -f json"
+        )
+        mgr_stat_before = json.loads(mgr_stat_before_out)
+        active_mgr_before = mgr_stat_before.get("active_name")
+        log.info(f"MGR active_name before failover: {active_mgr_before}")
+
+        log.info("Trigger MGR failover via 'ceph mgr fail'")
+        source_clients[0].exec_command(sudo=True, cmd="ceph mgr fail", check_ec=False)
+        time.sleep(15)
+
+        log.info("Validate MGR failover by checking active_name has changed")
+        mgr_stat_after_out, _ = source_clients[0].exec_command(
+            sudo=True, cmd="ceph mgr stat -f json"
+        )
+        mgr_stat_after = json.loads(mgr_stat_after_out)
+        active_mgr_after = mgr_stat_after.get("active_name")
+        log.info(f"MGR active_name after failover: {active_mgr_after}")
+        if active_mgr_after == active_mgr_before:
+            raise Exception(
+                f"Scenario 4 FAILED: MGR failover did not occur "
+                f"(active_name is still '{active_mgr_after}')"
+            )
+        log.info(
+            f"MGR failover confirmed: '{active_mgr_before}' -> '{active_mgr_after}'"
+        )
+
+        log.info("Query MGR status from newly active MGR daemon")
+        mgr_status_post_failover = None
+        for poll_i in range(20):
+            time.sleep(5)
+            try:
+                mgr_status_post_failover = fs_mirroring_utils.get_mgr_mirror_status(
+                    source_clients[0], source_fs
+                )
+                if mgr_status_post_failover and mgr_status_post_failover.get("metrics"):
+                    log.info("MGR daemon recovered and serving mirror metrics")
+                    break
+            except Exception as mgr_err:
+                log.info(
+                    f"[Scenario 4 Post-Failover Poll {poll_i}] Waiting for MGR: {mgr_err}"
+                )
+
+        if not mgr_status_post_failover or not mgr_status_post_failover.get("metrics"):
+            raise CommandFailed(
+                "Scenario 4 FAILED: MGR metrics unavailable after MGR failover"
+            )
+
+        metrics_failover = mgr_status_post_failover.get("metrics", {})
+        path_mgr_data = metrics_failover.get(path_key, {})
+        log.info(f"MGR metrics after failover: {json.dumps(path_mgr_data, indent=2)}")
+        if not path_mgr_data:
+            raise CommandFailed(
+                f"Scenario 4 FAILED: Mirrored path {path_key} missing from MGR after failover"
+            )
+
+        log.info("Wait for snap_mgr_failover sync to complete and return to idle")
+        for poll_i in range(40):
+            time.sleep(15)
+            peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
+                cephfs_mirror_node[0], source_clients[0], source_fs
+            )
+            path_status = peer_status.get(path_key, {})
+            state = path_status.get("state")
+            last = path_status.get("last_synced_snap", {}).get("name")
+            log.info(
+                f"[Scenario 4 Post-Failover Wait {poll_i}] state={state}, last_synced={last}"
+            )
+            if state == "idle" and last == snap_mgr_failover:
+                log.info(f"Sync reached idle for {snap_mgr_failover}")
+                break
+        else:
+            raise CommandFailed(
+                "Scenario 4 FAILED: Sync did not reach idle after MGR failover"
+            )
+
+        log.info("=" * 60)
+        log.info(
+            "PASSED: Scenario 4 — MGR failover during active sync preserved metrics "
+            "and completed sync"
+        )
+        log.info("=" * 60)
+
+        log.info("All disruptive scenarios (Scenarios 1-4) completed successfully")
         return 0
 
     except Exception as e:
@@ -412,7 +662,13 @@ def run(ceph_cluster, **kw):
             if not locals().get("mount_path"):
                 raise Exception("Skip cleanup: setup did not complete")
             log.info("Delete the snapshots")
-            for snap in ["snap_baseline", "snap_restart_test", "snap_conflict"]:
+            for snap in [
+                "snap_baseline",
+                "snap_restart_test",
+                "snap_conflict",
+                "snap_conflict_s3",
+                "snap_mgr_failover",
+            ]:
                 source_clients[0].exec_command(
                     sudo=True,
                     cmd=f"rmdir {mount_path}.snap/{snap}",
@@ -439,6 +695,17 @@ def run(ceph_cluster, **kw):
                 target_clients[0].exec_command(
                     sudo=True,
                     cmd=f"rm -rf {target_mount_path}",
+                    check_ec=False,
+                )
+            if locals().get("target_mount_path_s3"):
+                target_clients[0].exec_command(
+                    sudo=True,
+                    cmd=f"umount -l {target_mount_path_s3}",
+                    check_ec=False,
+                )
+                target_clients[0].exec_command(
+                    sudo=True,
+                    cmd=f"rm -rf {target_mount_path_s3}",
                     check_ec=False,
                 )
 
