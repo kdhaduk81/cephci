@@ -7,6 +7,7 @@ import traceback
 from ceph.ceph import CommandFailed
 from tests.cephfs.cephfs_mirroring.cephfs_mirroring_utils import (
     CephfsMirroringUtils,
+    parse_sync_duration_to_seconds,
     validate_current_syncing_snap_schema,
     validate_last_synced_snap_schema,
     validate_peer_status_schema,
@@ -757,26 +758,39 @@ def run(ceph_cluster, **kw):
             sudo=True,
             cmd=f"dd if=/dev/urandom of={mount_path1}overhead_data_base.dat bs=100M count=50 status=none",
         )
-        t_start_base = time.time()
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path1}.snap/{snap_overhead_base}"
         )
 
-        log.info("Overhead Phase 1: Wait for baseline sync to reach idle")
+        log.info("Overhead Phase 1: Wait for baseline sync to reach idle (via MGR)")
+        duration_base = None
         for poll_i in range(40):
             time.sleep(15)
-            peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
-                cephfs_mirror_node[0], source_clients[0], source_fs
+            mgr_status = fs_mirroring_utils.get_mgr_mirror_status(
+                source_clients[0], source_fs
             )
-            ps = peer_status.get(path1_key, {})
+            mgr_peer_list = list(
+                mgr_status.get("metrics", {})
+                .get(path1_key, {})
+                .get("peer", {})
+                .values()
+            )
+            ps = mgr_peer_list[0] if mgr_peer_list else {}
             state = ps.get("state")
-            last = ps.get("last_synced_snap", {}).get("name")
+            last_snap = ps.get("last_synced_snap", {})
+            last = last_snap.get("name")
             log.info(f"[Overhead Base Poll {poll_i}] state={state}, last_synced={last}")
             if state == "idle" and last == snap_overhead_base:
+                duration_base = parse_sync_duration_to_seconds(
+                    last_snap.get("sync_duration")
+                )
                 break
         else:
             raise CommandFailed("Overhead Phase 1: Baseline sync did not complete")
-        duration_base = time.time() - t_start_base
+        if duration_base is None:
+            raise CommandFailed(
+                "Overhead Phase 1: sync_duration missing or unparseable in last_synced_snap"
+            )
         log.info(f"Overhead Phase 1: Baseline sync duration = {duration_base:.2f}s")
 
         # Phase 2: Active tracking run (tick_interval = 5s)
@@ -799,28 +813,41 @@ def run(ceph_cluster, **kw):
             sudo=True,
             cmd=f"dd if=/dev/urandom of={mount_path1}overhead_data_active.dat bs=100M count=50 status=none",
         )
-        t_start_active = time.time()
         source_clients[0].exec_command(
             sudo=True, cmd=f"mkdir {mount_path1}.snap/{snap_overhead_active}"
         )
 
-        log.info("Overhead Phase 2: Wait for active sync to reach idle")
+        log.info("Overhead Phase 2: Wait for active sync to reach idle (via MGR)")
+        duration_active = None
         for poll_i in range(40):
             time.sleep(15)
-            peer_status = fs_mirroring_utils.get_fs_mirror_peer_status_using_asok(
-                cephfs_mirror_node[0], source_clients[0], source_fs
+            mgr_status = fs_mirroring_utils.get_mgr_mirror_status(
+                source_clients[0], source_fs
             )
-            ps = peer_status.get(path1_key, {})
+            mgr_peer_list = list(
+                mgr_status.get("metrics", {})
+                .get(path1_key, {})
+                .get("peer", {})
+                .values()
+            )
+            ps = mgr_peer_list[0] if mgr_peer_list else {}
             state = ps.get("state")
-            last = ps.get("last_synced_snap", {}).get("name")
+            last_snap = ps.get("last_synced_snap", {})
+            last = last_snap.get("name")
             log.info(
                 f"[Overhead Active Poll {poll_i}] state={state}, last_synced={last}"
             )
             if state == "idle" and last == snap_overhead_active:
+                duration_active = parse_sync_duration_to_seconds(
+                    last_snap.get("sync_duration")
+                )
                 break
         else:
             raise CommandFailed("Overhead Phase 2: Active sync did not complete")
-        duration_active = time.time() - t_start_active
+        if duration_active is None:
+            raise CommandFailed(
+                "Overhead Phase 2: sync_duration missing or unparseable in last_synced_snap"
+            )
         log.info(f"Overhead Phase 2: Active sync duration = {duration_active:.2f}s")
 
         # Phase 3: Compare & Evaluate
