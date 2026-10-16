@@ -2109,31 +2109,49 @@ class CephfsMirroringUtils(object):
         cephfs_mirror_node,
         source_clients,
         fs_name,
+        fsid=None,
+        filesystem_id=None,
+        asok_files=None,
+        peer_uuid=None,
     ):
         """
         Get the CephFS mirror peer status using the specified asok file.
 
+        When *asok_files* (and optionally *fsid*, *filesystem_id*, *peer_uuid*)
+        are supplied the expensive one-time setup (dnf install, fsid/daemon/asok
+        discovery) is skipped entirely.  Pass the values that were already
+        fetched before a polling loop to keep each poll iteration fast.
+
         :param cephfs_mirror_node: List of cephfs mirror nodes
+        :param source_clients: Source client node(s)
         :param fs_name: Filesystem name
-        :param fsid: Filesystem ID
-        :param asok_file: Asok file path
-        :param filesystem_id: Filesystem ID
-        :param peer_uuid: Peer UUID
+        :param fsid: (optional) Pre-fetched cluster FSID
+        :param filesystem_id: (optional) Pre-fetched filesystem numeric ID
+        :param asok_files: (optional) Pre-fetched {hostname: [node, asok_path]}
+        :param peer_uuid: (optional) Pre-fetched peer UUID
         :return: JSON response containing fs mirror peer status
         """
         if not isinstance(cephfs_mirror_node, list):
             cephfs_mirror_node = [cephfs_mirror_node]
-        for node in cephfs_mirror_node:
-            node.exec_command(sudo=True, cmd="dnf install -y ceph-common --nogpgcheck")
-        fsid = self.get_fsid(cephfs_mirror_node[0])
-        daemon_names = self.get_daemon_name(source_clients)
-        filesystem_id = self.get_filesystem_id_by_name(source_clients, fs_name)
-        asok_files = self.get_asok_file_with_connectivity_check(
-            cephfs_mirror_node, fsid, daemon_names
-        )
-        if not asok_files:
-            raise CommandFailed("No accessible cephfs-mirror admin socket found")
-        peer_uuid = self.get_peer_uuid_by_name(source_clients, fs_name)
+        if asok_files is None:
+            # Expensive one-time setup — only executed when values are not
+            # pre-fetched by the caller (e.g. first call or non-polling usage).
+            for node in cephfs_mirror_node:
+                node.exec_command(
+                    sudo=True, cmd="dnf install -y ceph-common --nogpgcheck"
+                )
+            if fsid is None:
+                fsid = self.get_fsid(cephfs_mirror_node[0])
+            daemon_names = self.get_daemon_name(source_clients)
+            if filesystem_id is None:
+                filesystem_id = self.get_filesystem_id_by_name(source_clients, fs_name)
+            asok_files = self.get_asok_file_with_connectivity_check(
+                cephfs_mirror_node, fsid, daemon_names
+            )
+            if not asok_files:
+                raise CommandFailed("No accessible cephfs-mirror admin socket found")
+        if peer_uuid is None:
+            peer_uuid = self.get_peer_uuid_by_name(source_clients, fs_name)
         log.info("Get filesystem mirror status")
         for node, asok_file in asok_files.items():
             asok_basename = asok_file[1].rsplit("/", 1)[-1]
@@ -2823,21 +2841,43 @@ class CephfsMirroringUtils(object):
         )
         return json.loads(out)
 
-    def get_asok_peer_status_raw(self, cephfs_mirror_node, source_client, fs_name):
+    def get_asok_peer_status_raw(
+        self,
+        cephfs_mirror_node,
+        source_client,
+        fs_name,
+        fsid=None,
+        filesystem_id=None,
+        asok_files=None,
+        peer_uuid=None,
+    ):
         """
         Get raw asok peer status with current_syncing_snap details.
         Returns the full JSON dict keyed by directory path.
+
+        Pass pre-fetched *fsid*, *filesystem_id*, *asok_files* and *peer_uuid*
+        to skip expensive setup and keep polling loops fast.
 
         Args:
             cephfs_mirror_node: Mirror daemon node (or list).
             source_client: Source client for daemon queries.
             fs_name (str): Filesystem name.
+            fsid (str, optional): Pre-fetched cluster FSID.
+            filesystem_id (str, optional): Pre-fetched filesystem numeric ID.
+            asok_files (dict, optional): Pre-fetched {hostname: [node, asok_path]}.
+            peer_uuid (str, optional): Pre-fetched peer UUID.
 
         Returns:
             dict: Raw peer status JSON from admin socket.
         """
         return self.get_fs_mirror_peer_status_using_asok(
-            cephfs_mirror_node, source_client, fs_name
+            cephfs_mirror_node,
+            source_client,
+            fs_name,
+            fsid=fsid,
+            filesystem_id=filesystem_id,
+            asok_files=asok_files,
+            peer_uuid=peer_uuid,
         )
 
     def get_directory_counters(self, cephfs_mirror_node, fsid, asok_file, fs_name=None):
