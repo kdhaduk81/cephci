@@ -48,6 +48,8 @@ def run(ceph_cluster, **kw):
         fs_util_ceph1.auth_list(source_clients)
         fs_util_ceph2.auth_list(target_clients)
 
+        target_mount_paths = []
+
         log.info("Remove the existing Cephfs Mirroring Service")
         source_clients[0].exec_command(sudo=True, cmd="ceph orch rm cephfs-mirror")
         time.sleep(30)

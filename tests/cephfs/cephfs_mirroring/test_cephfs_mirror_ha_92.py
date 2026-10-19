@@ -1,3 +1,4 @@
+import json
 import time
 import traceback
 
@@ -159,7 +160,7 @@ def run(ceph_cluster, **kw):
             sv_paths.append(p)
             mnt_dirs.append(m)
             # Enable mirroring on path
-            fs_mirroring_utils.enable_mirroring_on_path(source_clients[0], source_fs, p)
+            fs_mirroring_utils.add_path_for_mirroring(source_clients[0], source_fs, p)
 
         # Write initial data to all 4 subvolumes and snapshot them
         for i, mnt in enumerate(mnt_dirs, start=1):
@@ -253,7 +254,7 @@ def run(ceph_cluster, **kw):
             source_clients[0], vol_name=source_fs2, group_name=subvol_group_name
         )
         sv2_path, sv2_mnt = _create_subvolume_and_mount(source_fs2, "subvol_fs2_1")
-        fs_mirroring_utils.enable_mirroring_on_path(
+        fs_mirroring_utils.add_path_for_mirroring(
             source_clients[0], source_fs2, sv2_path
         )
         source_clients[0].exec_command(
@@ -325,9 +326,27 @@ def run(ceph_cluster, **kw):
         log.info(f"Checkpoints before daemon failover: {chk_list_before}")
 
         # Identify which daemon is handling subvol_ha_1
-        # Stop daemon 1 (node6)
+        # Stop daemon 1 (node6) by resolving its daemon name via ceph orch ps
         log.info("Stopping daemon 1 (%s) to trigger redistribution", daemon1_hostname)
-        fs_mirroring_utils.stop_mirror_service(cephfs_mirror_nodes[0])
+        _orch_out, _ = source_clients[0].exec_command(
+            sudo=True, cmd="ceph orch ps --daemon_type cephfs-mirror -f json"
+        )
+        _orch_data = json.loads(_orch_out)
+        daemon1_name = next(
+            (
+                d["daemon_name"]
+                for d in _orch_data
+                if d.get("hostname") == daemon1_hostname
+            ),
+            None,
+        )
+        if not daemon1_name:
+            raise AssertionError(
+                f"Could not find cephfs-mirror daemon for node {daemon1_hostname}"
+            )
+        source_clients[0].exec_command(
+            sudo=True, cmd=f"ceph orch daemon stop {daemon1_name}"
+        )
 
         # Wait for daemon 2 to acquire directory and complete sync & checkpoint
         log.info("Waiting for sync and checkpoint to complete on surviving daemon")
@@ -397,9 +416,14 @@ def run(ceph_cluster, **kw):
         # SCENARIO 7: Tri-interface after HA failover & restart
         # --------------------------------------------------------------------------
         log.info("=== SCENARIO 7: Tri-interface after HA failover & daemon restart ===")
-        # Restart daemon 1
+        # Restart daemon 1 using the daemon name resolved earlier
         log.info("Restarting daemon 1 (%s)", daemon1_hostname)
-        fs_mirroring_utils.start_mirror_service(cephfs_mirror_nodes[0])
+        source_clients[0].exec_command(
+            sudo=True, cmd=f"ceph orch daemon start {daemon1_name}"
+        )
+        CephfsMirroringUtils.wait_for_daemon_running(
+            source_clients[0], [cephfs_mirror_nodes[0]]
+        )
         time.sleep(15)
 
         # Trigger sync on subvol_ha_2 and verify tri-interface recovery
