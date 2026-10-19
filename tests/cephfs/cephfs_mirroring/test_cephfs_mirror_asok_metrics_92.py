@@ -206,8 +206,8 @@ def run(ceph_cluster, **kw):
 
         fsid = fs_mirroring_utils.get_fsid(cephfs_mirror_node[0])
         daemon_name = fs_mirroring_utils.get_daemon_name(source_clients[0])
-        asok_file = fs_mirroring_utils.get_asok_file(
-            cephfs_mirror_node[0], fsid, daemon_name
+        asok_file = fs_mirroring_utils.get_asok_file_with_connectivity_check(
+            cephfs_mirror_node, fsid, daemon_name
         )
         filesystem_id = fs_mirroring_utils.get_filesystem_id_by_name(
             source_clients[0], source_fs

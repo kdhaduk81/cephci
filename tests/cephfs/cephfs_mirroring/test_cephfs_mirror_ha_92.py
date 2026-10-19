@@ -6,8 +6,8 @@ from looseversion import LooseVersion
 
 from tests.cephfs.cephfs_mirroring.cephfs_mirroring_utils import (
     CephfsMirroringUtils,
-    checkpoint_add,
     checkpoint_ls,
+    checkpoint_now,
     wait_for_idle,
 )
 from tests.cephfs.cephfs_utilsV1 import FsUtils
@@ -220,10 +220,14 @@ def run(ceph_cluster, **kw):
         )
 
         d1_paths = {
-            e.get("labels", {}).get("source_directory_path") for e in d1_counters
+            e.get("labels", {}).get("directory")
+            for e in d1_counters
+            if e.get("labels", {}).get("directory") is not None
         }
         d2_paths = {
-            e.get("labels", {}).get("source_directory_path") for e in d2_counters
+            e.get("labels", {}).get("directory")
+            for e in d2_counters
+            if e.get("labels", {}).get("directory") is not None
         }
         log.info(f"Daemon 1 ({daemon1_hostname}) assigned directories: {d1_paths}")
         log.info(f"Daemon 2 ({daemon2_hostname}) assigned directories: {d2_paths}")
@@ -323,13 +327,10 @@ def run(ceph_cluster, **kw):
             snap_name=chk_snap,
             group_name=subvol_group_name,
         )
-        # Add checkpoint
-        checkpoint_add(
-            source_clients[0],
-            source_fs,
-            target_sv_path,
-            chk_snap,
-        )
+        # Use 'checkpoint now' to pin a checkpoint to the current snapshot.
+        # Unlike 'checkpoint add', this does not require the mirror daemon to
+        # have already discovered the snapshot, so no wait is needed.
+        checkpoint_now(source_clients[0], source_fs, target_sv_path)
         chk_list_before = checkpoint_ls(source_clients[0], source_fs, target_sv_path)
         log.info(f"Checkpoints before daemon failover: {chk_list_before}")
 

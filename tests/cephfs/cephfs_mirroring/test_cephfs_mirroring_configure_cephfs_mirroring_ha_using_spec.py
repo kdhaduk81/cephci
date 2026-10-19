@@ -14,6 +14,18 @@ log = Log(__name__)
 def run(ceph_cluster, **kw):
     """ """
 
+    kernel_mounting_dir_1 = None
+    fuse_mounting_dir_1 = None
+    subvol1_path = None
+    subvol2_path = None
+    target_mount_paths = []
+    peer_uuid = None
+    subvolume_list = []
+    subvolumegroup_list = []
+    source_fs = None
+    target_fs = None
+    target_user = None
+
     try:
         config = kw.get("config")
         ceph_cluster_dict = kw.get("ceph_cluster_dict")
@@ -47,8 +59,6 @@ def run(ceph_cluster, **kw):
         fs_util_ceph2.prepare_clients(target_clients, build)
         fs_util_ceph1.auth_list(source_clients)
         fs_util_ceph2.auth_list(target_clients)
-
-        target_mount_paths = []
 
         log.info("Remove the existing Cephfs Mirroring Service")
         source_clients[0].exec_command(sudo=True, cmd="ceph orch rm cephfs-mirror")
@@ -330,53 +340,67 @@ def run(ceph_cluster, **kw):
         return 1
     finally:
         log.info("Clean up the system")
-        log.info("Delete the snapshots")
-        snapshots_to_delete = [
-            f"{kernel_mounting_dir_1}{subvol1_path}.snap/snap_k1",
-            f"{fuse_mounting_dir_1}{subvol2_path}.snap/snap_f1",
-        ]
-        for snapshot_path in snapshots_to_delete:
-            source_clients[0].exec_command(sudo=True, cmd=f"rmdir {snapshot_path}")
+        if (
+            kernel_mounting_dir_1
+            and subvol1_path
+            and fuse_mounting_dir_1
+            and subvol2_path
+        ):
+            log.info("Delete the snapshots")
+            snapshots_to_delete = [
+                f"{kernel_mounting_dir_1}{subvol1_path}.snap/snap_k1",
+                f"{fuse_mounting_dir_1}{subvol2_path}.snap/snap_f1",
+            ]
+            for snapshot_path in snapshots_to_delete:
+                source_clients[0].exec_command(sudo=True, cmd=f"rmdir {snapshot_path}")
 
-        log.info("Unmount the paths")
-        paths_to_unmount = [kernel_mounting_dir_1, fuse_mounting_dir_1]
-        for path in paths_to_unmount:
-            source_clients[0].exec_command(sudo=True, cmd=f"umount -l {path}")
+        if kernel_mounting_dir_1 and fuse_mounting_dir_1:
+            log.info("Unmount the paths")
+            paths_to_unmount = [kernel_mounting_dir_1, fuse_mounting_dir_1]
+            for path in paths_to_unmount:
+                source_clients[0].exec_command(sudo=True, cmd=f"umount -l {path}")
 
-        log.info("Remove paths used for mirroring")
-        paths_to_remove = [subvol1_path, subvol2_path]
-        for path in paths_to_remove:
-            fs_mirroring_utils.remove_path_from_mirroring(
-                source_clients[0], source_fs, path
-            )
+        if subvol1_path and subvol2_path and source_fs:
+            log.info("Remove paths used for mirroring")
+            paths_to_remove = [subvol1_path, subvol2_path]
+            for path in paths_to_remove:
+                fs_mirroring_utils.remove_path_from_mirroring(
+                    source_clients[0], source_fs, path
+                )
 
-        log.info("Destroy CephFS Mirroring setup.")
-        fs_mirroring_utils.destroy_cephfs_mirroring(
-            source_fs,
-            source_clients[0],
-            target_fs,
-            target_clients[0],
-            target_user,
-            peer_uuid,
-        )
-
-        log.info("Remove Subvolumes")
-        for subvolume in subvolume_list:
-            fs_util_ceph1.remove_subvolume(
+        if source_fs and target_fs and target_user and peer_uuid:
+            log.info("Destroy CephFS Mirroring setup.")
+            fs_mirroring_utils.destroy_cephfs_mirroring(
+                source_fs,
                 source_clients[0],
-                **subvolume,
+                target_fs,
+                target_clients[0],
+                target_user,
+                peer_uuid,
             )
 
-        log.info("Remove Subvolume Group")
-        for subvolumegroup in subvolumegroup_list:
-            fs_util_ceph1.remove_subvolumegroup(source_clients[0], **subvolumegroup)
+        if subvolume_list:
+            log.info("Remove Subvolumes")
+            for subvolume in subvolume_list:
+                fs_util_ceph1.remove_subvolume(
+                    source_clients[0],
+                    **subvolume,
+                )
 
-        log.info("Delete the mounted paths")
-        mounted_paths = [kernel_mounting_dir_1, fuse_mounting_dir_1]
-        for path in mounted_paths:
-            source_clients[0].exec_command(sudo=True, cmd=f"rm -rf {path}")
-        log.info("Cleanup Target Client")
-        for target_mount_path in target_mount_paths:
-            fs_mirroring_utils.cleanup_target_client(
-                target_clients[0], target_mount_path
-            )
+        if subvolumegroup_list:
+            log.info("Remove Subvolume Group")
+            for subvolumegroup in subvolumegroup_list:
+                fs_util_ceph1.remove_subvolumegroup(source_clients[0], **subvolumegroup)
+
+        if kernel_mounting_dir_1 and fuse_mounting_dir_1:
+            log.info("Delete the mounted paths")
+            mounted_paths = [kernel_mounting_dir_1, fuse_mounting_dir_1]
+            for path in mounted_paths:
+                source_clients[0].exec_command(sudo=True, cmd=f"rm -rf {path}")
+
+        if target_mount_paths:
+            log.info("Cleanup Target Client")
+            for target_mount_path in target_mount_paths:
+                fs_mirroring_utils.cleanup_target_client(
+                    target_clients[0], target_mount_path
+                )

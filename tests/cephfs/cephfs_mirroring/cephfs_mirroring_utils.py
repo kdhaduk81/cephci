@@ -2196,18 +2196,22 @@ class CephfsMirroringUtils(object):
         if peer_uuid is None:
             peer_uuid = self.get_peer_uuid_by_name(source_clients, fs_name)
         log.info("Get filesystem mirror status")
+        all_status = {}
         for node, asok_file in asok_files.items():
-            asok_basename = asok_file[1].rsplit("/", 1)[-1]
-            asok_dir = f"/var/run/ceph/{fsid}"
-            out, _ = asok_file[0].exec_command(
-                sudo=True,
-                cmd=f"cd {asok_dir} && ceph --admin-daemon {asok_basename} "
-                f"fs mirror peer status {fs_name}@{filesystem_id} {peer_uuid} -f json",
-            )
-            fs_mirror_status = json.loads(out)
-            log.info(f"fs_mirror_status: {fs_mirror_status}")
-            return _normalize_asok_peer_status(fs_mirror_status)
-
+            try:
+                asok_basename = asok_file[1].rsplit("/", 1)[-1]
+                asok_dir = f"/var/run/ceph/{fsid}"
+                out, _ = asok_file[0].exec_command(
+                    sudo=True,
+                    cmd=f"cd {asok_dir} && ceph --admin-daemon {asok_basename} "
+                    f"fs mirror peer status {fs_name}@{filesystem_id} {peer_uuid} -f json",
+                )
+                fs_mirror_status = json.loads(out)
+                log.info(f"fs_mirror_status on {node}: {fs_mirror_status}")
+                all_status.update(_normalize_asok_peer_status(fs_mirror_status))
+            except Exception as e:
+                log.warning(f"Failed to get peer status from asok on {node}: {e}")
+        return all_status
     def validate_snaps_status_increment(self, json_before, json_after, snap_status):
         json_before = _normalize_asok_peer_status(json_before)
         json_after = _normalize_asok_peer_status(json_after)
@@ -3396,6 +3400,33 @@ def checkpoint_ls(client, fs_name, path, check_ec=True):
         return data if isinstance(data, list) else []
     except json.JSONDecodeError:
         return []
+
+
+def checkpoint_now(client, fs_name, path, check_ec=True):
+    """
+    Pin a checkpoint to the current (latest) snapshot on a mirrored path.
+
+    Unlike ``checkpoint_add``, this command does not require a specific
+    snapshot name and does not require the mirror daemon to have already
+    discovered or synced the snapshot.  The daemon resolves the latest
+    snapshot itself at the time of the call.
+
+    Args:
+        client: Ceph client object.
+        fs_name (str): Filesystem name.
+        path (str): Subvolume or directory path.
+        check_ec (bool): Whether to fail if command returns non-zero.
+
+    Returns:
+        str: Command stdout (stripped) if check_ec=True,
+             else tuple (stdout, stderr).
+    """
+    cmd = f"ceph fs snapshot mirror checkpoint now {fs_name} {path}"
+    out, err = client.exec_command(sudo=True, cmd=cmd, check_ec=check_ec)
+    log.info(
+        f"checkpoint now: stdout='{out.strip()}', stderr='{err.strip()}'"
+    )
+    return out.strip() if check_ec else (out.strip(), err.strip())
 
 
 def checkpoint_rm(client, fs_name, path, snap_name, check_ec=True):
