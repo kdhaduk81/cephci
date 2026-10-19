@@ -128,12 +128,13 @@ def run(ceph_cluster, **kw):
                 group_name=subvol_group_name,
                 size="5368709120",
             )
-            sv_path = fs_util_ceph1.get_subvolume_path(
+            subvol_info = fs_util_ceph1.get_subvolume_info(
                 source_clients[0],
-                vol_name=fs_name,
-                subvol_name=sv_name,
+                fs_name,
+                sv_name,
                 group_name=subvol_group_name,
-            ).strip()
+            )
+            sv_path = subvol_info["path"].strip()
             subvol_paths_created.append(sv_path)
 
             mnt_dir = f"/mnt/cephfs_ha92_{sv_name}_{int(time.time())}"
