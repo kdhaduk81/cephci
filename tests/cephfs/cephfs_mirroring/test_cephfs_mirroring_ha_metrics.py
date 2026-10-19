@@ -69,9 +69,17 @@ def run(ceph_cluster, **kw):
 
         log.info("Name of the cephfs-mirror daemons")
         daemon_names = fs_mirroring_utils.get_daemon_name(source_clients[0])
-        asok_files = fs_mirroring_utils.get_asok_file(
+        asok_files = fs_mirroring_utils.get_asok_file_with_connectivity_check(
             cephfs_mirror_node, fsid, daemon_names
         )
+        if not asok_files:
+            log.warning(
+                "get_asok_file_with_connectivity_check returned nothing; "
+                "falling back to get_asok_file"
+            )
+            asok_files = fs_mirroring_utils.get_asok_file(
+                cephfs_mirror_node, fsid, daemon_names
+            )
         log.info(f"Admin Socket files of all cephfs-mirror daemon : {asok_files}")
 
         cephfs_mirror_node1 = cephfs_mirror_node[0].node.hostname

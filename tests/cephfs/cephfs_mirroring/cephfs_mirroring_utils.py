@@ -891,7 +891,13 @@ class CephfsMirroringUtils(object):
         Returns:
             dict: {hostname: [node, asok_file_path]}
         """
+        # Normalise: the function always iterates over nodes, so ensure a list.
+        if not isinstance(cephfs_mirror_node, list):
+            cephfs_mirror_node = [cephfs_mirror_node]
+
         accessible_asok_files = {}
+        if not isinstance(daemon_names, list):
+            daemon_names = [daemon_names]
         daemon_ids = {n.rsplit(".", 1)[-1] for n in daemon_names if "." in n}
 
         # --- Resolve the node(s) where the daemon is actually running -------
@@ -1801,7 +1807,15 @@ class CephfsMirroringUtils(object):
         log.info(f"fsid on ceph cluster : {fsid}")
         daemon_names = self.get_daemon_name(source_clients[0])
 
-        asok_files = self.get_asok_file(cephfs_mirror_node, fsid, daemon_names)
+        asok_files = self.get_asok_file_with_connectivity_check(
+            cephfs_mirror_node, fsid, daemon_names
+        )
+        if not asok_files:
+            log.warning(
+                "get_asok_file_with_connectivity_check returned nothing in "
+                "add_files_and_validate; falling back to get_asok_file"
+            )
+            asok_files = self.get_asok_file(cephfs_mirror_node, fsid, daemon_names)
         log.info(f"Admin Socket file of cephfs-mirror daemon : {asok_files}")
         filesystem_id = self.get_filesystem_id_by_name(source_clients[0], source_fs)
         log.info(f"filesystem id of {source_fs} is : {filesystem_id}")
@@ -2057,7 +2071,15 @@ class CephfsMirroringUtils(object):
         daemon_names = self.get_daemon_name(source_clients)
         filesystem_id = self.get_filesystem_id_by_name(source_clients, fs_name)
         resolved_nodes = self._resolve_mirror_nodes(source_clients, cephfs_mirror_node)
-        asok_files = self.get_asok_file(resolved_nodes, fsid, daemon_names)
+        asok_files = self.get_asok_file_with_connectivity_check(
+            resolved_nodes, fsid, daemon_names
+        )
+        if not asok_files:
+            log.warning(
+                "get_asok_file_with_connectivity_check returned nothing in "
+                "get_fs_mirror_status_using_asok; falling back to get_asok_file"
+            )
+            asok_files = self.get_asok_file(resolved_nodes, fsid, daemon_names)
         log.info("Get filesystem mirror status")
         for node, asok_file in asok_files.items():
             asok_basename = asok_file[1].rsplit("/", 1)[-1]
