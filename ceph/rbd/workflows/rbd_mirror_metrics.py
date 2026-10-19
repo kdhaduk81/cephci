@@ -70,7 +70,7 @@ def create_symlink_and_get_metrics(mirror_node):
                     return 1
 
         # Validation of mirror related metrics
-        command = f"ceph --admin-daemon {ceph_dir_path}/{target_directory}/rbd-mirror.asok counter dump"
+        command = f"/usr/bin/ceph --admin-daemon {ceph_dir_path}/{target_directory}/rbd-mirror.asok counter dump"
 
         out = mirror_node.exec_command(cmd=command, output=True, sudo=True)
         metrics = json.loads(out[0])

@@ -883,7 +883,7 @@ def fetch_cephfs_mirror_counters(fsid, asok_files):
     counters = {}
     for node_name, asok_file_info in asok_files.items():
         asok_file = asok_file_info[1]
-        command = f"ceph --admin-daemon {asok_file} counter dump -f json"
+        command = f"/usr/bin/ceph --admin-daemon {asok_file} counter dump -f json"
         out, _ = asok_file_info[0].exec_command(
             sudo=True, cmd=f"cd /var/run/ceph/{fsid}/ ; {command}"
         )

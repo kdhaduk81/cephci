@@ -234,6 +234,59 @@ class CephfsMirroringUtils(object):
         self.fs_util_ceph1 = FsUtils(source_ceph_cluster)
         self.fs_util_ceph2 = FsUtils(target_ceph_cluster)
 
+    def _install_ceph_common(self, node, raise_on_error=False):
+        """Install ceph-common with EPEL/CRB repo setup to satisfy all dependencies.
+
+        ``ceph-common`` requires packages like ``libicuuc``, ``librabbitmq``,
+        ``librdkafka``, and ``python3-prettytable`` that live in EPEL / CRB.
+        Without enabling those repos the plain ``dnf install`` fails with
+        "nothing provides …" errors even though a manual install succeeds after
+        the admin has enabled EPEL.  This helper mirrors the logic used in
+        ``ceph/ceph_admin/__init__.py``.
+
+        Args:
+            node: cluster node on which to install ceph-common.
+            raise_on_error (bool): when *False* (default) a failure is logged
+                as a warning and the method returns silently, preserving the
+                existing non-fatal behaviour used by several callers.
+        """
+        try:
+            version_id = node.distro_info.get("VERSION_ID", "")
+            epel_rpm = ""
+            if version_id.startswith("8"):
+                epel_rpm = "https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm"
+            elif version_id.startswith("9"):
+                epel_rpm = "https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm"
+            elif version_id.startswith("10"):
+                epel_rpm = "https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm"
+
+            if epel_rpm:
+                log.info("Enabling EPEL repo on %s (distro %s)", node, version_id)
+                node.exec_command(
+                    sudo=True,
+                    cmd=f"dnf install -y {epel_rpm} --nogpgcheck",
+                    check_ec=False,
+                )
+
+            # CRB (CodeReady Builder / PowerTools) ships librabbitmq, librdkafka, etc.
+            node.exec_command(
+                sudo=True,
+                cmd="dnf config-manager --set-enabled crb",
+                check_ec=False,
+            )
+
+            log.info("Installing ceph-common on %s", node)
+            node.exec_command(
+                sudo=True,
+                cmd="dnf install -y ceph-common --nogpgcheck",
+            )
+        except CommandFailed as e:
+            hostname = getattr(getattr(node, "node", node), "hostname", str(node))
+            if raise_on_error:
+                log.error("install ceph-common failed on %s: %s", hostname, e)
+                raise
+            log.warning("install ceph-common failed on %s (non-fatal): %s", hostname, e)
+
     @staticmethod
     def skip_if_rhcs_below(config, min_version="9.2"):
         """Return True when the RHCS rhbuild is older than min_version.
@@ -1894,7 +1947,9 @@ class CephfsMirroringUtils(object):
                 continue
             asok_basename = asok[1].rsplit("/", 1)[-1]
             asok_dir = f"/var/run/ceph/{fsid}"
-            command = f"ceph --admin-daemon {asok_basename} counter dump -f json"
+            command = (
+                f"/usr/bin/ceph --admin-daemon {asok_basename} counter dump -f json"
+            )
             out, _ = asok[0].exec_command(sudo=True, cmd=f"cd {asok_dir} && {command}")
             data = json.loads(out)
             log.info(f"Output of Metrics Report : {data}")
