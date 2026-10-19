@@ -933,13 +933,11 @@ class CephfsMirroringUtils(object):
                 asok_basename = asok_file_path.rsplit("/", 1)[-1]
                 test_cmd = f"cd {asok_dir} && ceph --admin-daemon {asok_basename} help"
                 out, err = node.exec_command(sudo=True, cmd=test_cmd, check_ec=False)
-                # Socket is considered reachable if 'help' succeeds and returns daemon commands
-                if out and (
-                    "fs mirror" in out
-                    or "counter dump" in out
-                    or "version" in out
-                    or "help" in out
-                ):
+                # Socket is considered reachable only if it exposes cephfs-mirror commands.
+                # A plain admin-socket (e.g. a peer-connection worker) reports only basic
+                # commands such as "config help" but NOT "fs mirror", so we require the
+                # latter to avoid picking a socket that cannot serve mirror-status queries.
+                if out and "fs mirror" in out:
                     hostname = getattr(
                         getattr(node, "node", node), "hostname", str(node)
                     )
@@ -1062,7 +1060,21 @@ class CephfsMirroringUtils(object):
             cephfs_mirror_node = [cephfs_mirror_node]
         fsid = self.get_fsid(cephfs_mirror_node[0])
         filesystem_id = self.get_filesystem_id_by_name(source_clients, fs_name)
-        asok_files = self.get_asok_file(cephfs_mirror_node, fsid, daemon_name)
+        # Use connectivity-aware lookup so that, in an HA setup where multiple
+        # .asok files exist for the same daemon name, we skip sockets that belong
+        # to peer-connection workers and only pick one that actually handles
+        # "fs mirror status" (i.e. one whose 'help' output contains "fs mirror").
+        daemon_names = daemon_name if isinstance(daemon_name, list) else [daemon_name]
+        asok_files = self.get_asok_file_with_connectivity_check(
+            cephfs_mirror_node, fsid, daemon_names
+        )
+        if not asok_files:
+            # Fall back to plain lookup if connectivity check found nothing
+            log.warning(
+                "get_asok_file_with_connectivity_check returned nothing; "
+                "falling back to get_asok_file"
+            )
+            asok_files = self.get_asok_file(cephfs_mirror_node, fsid, daemon_name)
         log.info("Get the details of synced dir from cephfs-mirror status")
         log.info("Install ceph-common on cephfs-mirror node")
         for node in cephfs_mirror_node:
