@@ -341,6 +341,70 @@ class CephfsMirroringUtils(object):
         log.error("No active MDS found for %s within %ss", filesystem_name, timeout)
         return 1
 
+    def is_mirroring_configured(self, source_client, source_fs):
+        """
+        Check if CephFS mirroring is already configured for the given filesystem.
+
+        Args:
+            source_client: Client node on source cluster
+            source_fs (str): Name of the source filesystem
+
+        Returns:
+            dict: {'configured': bool, 'peer_uuid': str or None}
+        """
+        result = {"configured": False, "peer_uuid": None}
+
+        try:
+            module_status, _ = source_client.exec_command(
+                sudo=True, cmd="ceph mgr module ls --format json-pretty"
+            )
+            module_data = json.loads(module_status)
+            if "mirroring" not in module_data.get("enabled_modules", []):
+                log.info("Mirroring module not enabled")
+                return result
+
+            # Use daemon status — 'ceph fs snapshot mirror show' is invalid on tentacle.
+            daemon_status, _ = source_client.exec_command(
+                sudo=True,
+                cmd="ceph fs snapshot mirror daemon status -f json",
+                check_ec=False,
+            )
+            if not daemon_status.strip():
+                log.info(
+                    "Snapshot mirroring not enabled for %s (daemon status empty)",
+                    source_fs,
+                )
+                return result
+
+            data = json.loads(daemon_status)
+            if not data or not isinstance(data, list):
+                log.info(
+                    "Snapshot mirroring not enabled for %s (daemon status empty list)",
+                    source_fs,
+                )
+                return result
+
+            for daemon_entry in data:
+                for filesystem in daemon_entry.get("filesystems", []):
+                    if filesystem.get("name") == source_fs:
+                        peers = filesystem.get("peers", [])
+                        if peers:
+                            result["peer_uuid"] = peers[0].get("uuid")
+                            result["configured"] = True
+                            log.info(
+                                "Mirroring is configured for %s (peer_uuid=%s)",
+                                source_fs,
+                                result["peer_uuid"],
+                            )
+                            return result
+
+            log.info("No peer connection found for %s in daemon status", source_fs)
+            return result
+
+        except Exception as e:
+            log.warning("Error checking mirroring configuration: %s", e)
+            return result
+
     @staticmethod
     def wait_for_daemon_recovery(client, daemon_name, context, timeout=60, interval=5):
         """Wait for a daemon to recover after a disruptive operation.
@@ -1358,6 +1422,8 @@ class CephfsMirroringUtils(object):
             tuple: A tuple containing a boolean indicating success or failure, and a message.
         """
         try:
+            # Clear any leftover/stale mount at this path before mkdir.
+            self.cleanup_target_client(target_clients, target_mount_path)
             target_clients.exec_command(sudo=True, cmd=f"mkdir -p {target_mount_path}")
             target_clients.exec_command(
                 sudo=True,

@@ -248,6 +248,11 @@ def run(ceph_cluster, **kw):
             random.choice(string.ascii_lowercase + string.digits)
             for _ in list(range(10))
         )
+        # Unique target mounts so suite runs do not collide on stale /mnt/remote_dirN
+        target_mount_path1 = f"/mnt/remote_dir1_{mounting_dir}"
+        target_mount_path2 = f"/mnt/remote_dir2_{mounting_dir}"
+        target_mount_path3 = f"/mnt/remote_dir3_{mounting_dir}"
+        target_mount_path4 = f"/mnt/remote_dir4_{mounting_dir}"
         kernel_mounting_dir_1 = f"/mnt/cephfs_kernel{mounting_dir}_1/"
         mon_node_ips = fs_util_ceph1.get_mon_node_ips()
         fs_util_ceph1.kernel_mount(
@@ -438,10 +443,6 @@ def run(ceph_cluster, **kw):
             log.error("One or both snapshots not found or not synced.")
 
         log.info("Validate the snapshots and data synced to the target cluster")
-        target_mount_path1 = "/mnt/remote_dir1"
-        target_mount_path2 = "/mnt/remote_dir2"
-        target_mount_path3 = "/mnt/remote_dir3"
-        target_mount_path4 = "/mnt/remote_dir4"
         target_client_user = "client.admin"
         source_path1 = f"/{kernel_path_1}/"
         source_path2 = f"/{kernel_path_2}/"
@@ -505,6 +506,10 @@ def run(ceph_cluster, **kw):
             target_fs_2,
         )
 
+        log.info("Status of snap_k1 verify: %s", result1)
+        log.info("Status of snap_k2 verify: %s", result2)
+        log.info("Status of snap_f1 verify: %s", result3)
+        log.info("Status of snap_f2 verify: %s", result4)
         if success1 and success2 and success3 and success4:
             log.info(
                 "Test Completed Successfully."

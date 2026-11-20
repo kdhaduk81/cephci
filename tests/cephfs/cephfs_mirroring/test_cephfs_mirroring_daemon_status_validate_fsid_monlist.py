@@ -306,13 +306,14 @@ def run(ceph_cluster, **kw):
 
         log.info("Destroy cross-cluster mirroring for %s -> %s", source_fs, target_fs)
         try:
-            fs_mirroring_utils.destroy_cephfs_mirroring(
-                source_fs,
-                source_clients[0],
-                target_fs,
-                target_clients[0],
-                target_user,
-                peer_uuid,
-            )
+            if locals().get("peer_uuid"):
+                fs_mirroring_utils.destroy_cephfs_mirroring(
+                    source_fs,
+                    source_clients[0],
+                    target_fs,
+                    target_clients[0],
+                    target_user,
+                    peer_uuid,
+                )
         except Exception as e:
             log.warning("Cleanup of cross-cluster mirroring failed: %s", e)

@@ -37,8 +37,6 @@ def run(ceph_cluster, **kw):
     target_clients = None
     cephfs_mirror_node = None
     source_fs = target_fs = None
-    target_user = "mirror_remote"
-    target_site_name = "remote_site"
     fs_mirroring_utils = None
     snap_names = []
 
@@ -83,15 +81,18 @@ def run(ceph_cluster, **kw):
             fs_util_ceph2.create_fs(target_clients[0], target_fs)
             fs_util_ceph2.wait_for_mds_process(target_clients[0], target_fs)
 
-        log.info("Deploy CephFS Mirroring Configuration")
-        fs_mirroring_utils.deploy_cephfs_mirroring(
-            source_fs,
-            source_clients[0],
-            target_fs,
-            target_clients[0],
-            target_user,
-            target_site_name,
+        # Verify mirroring is configured (setup by setup_cephfs_mirroring.py)
+        log.info("Verifying CephFS mirroring is configured...")
+        mirror_check = fs_mirroring_utils.is_mirroring_configured(
+            source_clients[0], source_fs
         )
+        if not mirror_check["configured"]:
+            log.error(
+                "CephFS mirroring is not configured. "
+                "Run setup_cephfs_mirroring.py first."
+            )
+            return 1
+        log.info("Mirroring configured with peer_uuid: %s", mirror_check["peer_uuid"])
 
         mounting_dir = "".join(
             random.choice(string.ascii_lowercase + string.digits) for _ in range(10)
@@ -394,15 +395,7 @@ def run(ceph_cluster, **kw):
                     "Mirror path %s was not tracked, skipping removal", mirror_path
                 )
 
-        log.info("Destroy CephFS Mirroring setup.")
-        fs_mirroring_utils.destroy_cephfs_mirroring(
-            source_fs,
-            source_clients[0],
-            target_fs,
-            target_clients[0],
-            target_user,
-            peer_uuid,
-        )
+        # Note: Mirroring teardown is handled by teardown_cephfs_mirroring.py
 
         log.info("Unmount the paths")
         if kernel_mounting_dir:

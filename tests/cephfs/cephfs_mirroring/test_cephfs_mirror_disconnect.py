@@ -226,14 +226,14 @@ def run(ceph_cluster, **kw):
         # daemon on a node that differs from cephfs_mirror_node[0].
         first_asok_entry = next(iter(asok_files.values()))
         asok_node, asok_path = first_asok_entry[0], first_asok_entry[1]
+        # Use basename after cd — absolute asok paths exceed AF_UNIX sun_path limit
+        # on long hostnames (admin_socket: AF_UNIX path too long).
         asok_basename = asok_path.rsplit("/", 1)[-1]
         cmd = (
             f"cd /var/run/ceph/{fsid}/ ; ceph --admin-daemon {asok_basename} "
             f"fs mirror peer status "
             f"{source_fs}@{filesystem_id} {peer_uuid} -f json"
         )
-        for node in cephfs_mirror_node:
-            node.exec_command(sudo=True, cmd="dnf install -y ceph-common --nogpgcheck")
         retry_exec_command = retry(CommandFailed, tries=3, delay=30)(
             asok_node.exec_command
         )
