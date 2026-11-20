@@ -264,8 +264,8 @@ def run(ceph_cluster, **kw):
         log.info(
             "Validate the synced snapshots and data available on the target cluster"
         )
-        target_mount_path1 = "/mnt/remote_dir1"
-        target_mount_path2 = "/mnt/remote_dir2"
+        target_mount_path1 = f"/mnt/remote_dir1_{mounting_dir}"
+        target_mount_path2 = f"/mnt/remote_dir2_{mounting_dir}"
         target_client_user = "client.admin"
         source_path1 = subvol1_path
         source_path2 = subvol2_path
